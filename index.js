@@ -32,9 +32,10 @@ app.listen(PORT, () => {
 const DB_FILE = path.join(__dirname, 'database.json');
 
 let db = {
-    configs: {},     // guildId: { logChannelId: "...", retenueRoleId: "...", refugeWelcomeSent: true }
-    bulletins: {},   // guildId: { userId: "Appréciation..." }
-    pendingCodes: {} // codeId: { targetUserId: "...", identifiant: "...", mdp: "...", platform: "..." }
+    configs: {},         // guildId: { logChannelId: "...", retenueRoleId: "...", refugeWelcomeSent: true }
+    bulletins: {},       // guildId: { userId: "Appréciation..." }
+    pendingCodes: {},    // codeId: { targetUserId: "...", identifiant: "...", mdp: "...", platform: "..." }
+    restrictedUsers: {}  // userId: { reason: "...", restrictedAt: "ISO Date" }
 };
 
 if (fs.existsSync(DB_FILE)) {
@@ -44,6 +45,7 @@ if (fs.existsSync(DB_FILE)) {
         if (!db.pendingCodes) db.pendingCodes = {};
         if (!db.configs) db.configs = {};
         if (!db.bulletins) db.bulletins = {};
+        if (!db.restrictedUsers) db.restrictedUsers = {};
         console.log('💾 Base de données chargée avec succès !');
     } catch (e) {
         console.error('Erreur lors du chargement de database.json:', e);
@@ -71,6 +73,7 @@ const client = new Client({
 
 const TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
+const STAFF_KEY = process.env.BOT_STAFF_KEY || "ADMIN_SECRET_KEY"; // Définir la clé dans les variables Render
 
 // Console Log Créateur
 function logCreator(type, author, detail, guild = 'N/A') {
@@ -99,7 +102,7 @@ async function logGuildPublic(guild, embed) {
     }
 }
 
-// Gestion du Salon Refuge (isNewJoin = true quand le bot vient d'être ajouté)
+// Gestion du Salon Refuge
 async function checkRefugeChannel(guild, isNewJoin = false) {
     try {
         if (!db.configs[guild.id]) db.configs[guild.id] = {};
@@ -118,7 +121,6 @@ async function checkRefugeChannel(guild, isNewJoin = false) {
             console.log(`🛠️ Salon refuge créé sur : ${guild.name}`);
         }
 
-        // On envoie le message UNIQUEMENT à l'ajout sur le serveur (ou si jamais envoyé)
         if (isNewJoin || !db.configs[guild.id].refugeWelcomeSent) {
             const welcomeEmbed = new EmbedBuilder()
                 .setTitle('🏫 n0mit SchoolBot - Bienvenue !')
@@ -135,7 +137,6 @@ async function checkRefugeChannel(guild, isNewJoin = false) {
 
             await refugeChannel.send({ embeds: [welcomeEmbed] }).catch(() => {});
             
-            // Marquer comme envoyé pour ne PLUS JAMAIS le renvoyer aux redémarrages
             db.configs[guild.id].refugeWelcomeSent = true;
             saveDatabase();
         }
@@ -164,7 +165,32 @@ const commandsData = [
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
         .addRoleOption(opt => opt.setName('rôle').setDescription('Rôle autorisé (ex: Professeurs, Staff)').setRequired(true)),
 
+    // Système de Restriction (Staff Bot)
+    new SlashCommandBuilder()
+        .setName('restreindre')
+        .setDescription('Restreindre un utilisateur globalement (Staff Bot uniquement).')
+        .addUserOption(opt => opt.setName('cible').setDescription('L’utilisateur à restreindre').setRequired(true))
+        .addStringOption(opt => opt.setName('cle_secrete').setDescription('Clé secrète du Staff').setRequired(true))
+        .addStringOption(opt => opt.setName('raison').setDescription('Motif de la restriction').setRequired(false)),
+
+    new SlashCommandBuilder()
+        .setName('debloquer')
+        .setDescription('Lever la restriction d’un utilisateur (Staff Bot uniquement).')
+        .addUserOption(opt => opt.setName('cible').setDescription('L’utilisateur à débannir du bot').setRequired(true))
+        .addStringOption(opt => opt.setName('cle_secrete').setDescription('Clé secrète du Staff').setRequired(true)),
+
     // Vie Scolaire & RP
+    new SlashCommandBuilder()
+        .setName('avertissement')
+        .setDescription('Donner un avertissement disciplinaire RP à un élève.')
+        .setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages)
+        .addUserOption(opt => opt.setName('élève').setDescription('L’élève visé').setRequired(true))
+        .addStringOption(opt => opt.setName('motif').setDescription('Raison de l’avertissement').setRequired(true)),
+
+    new SlashCommandBuilder()
+        .setName('emploi_du_temps')
+        .setDescription('Afficher la grille indicative des cours de l’établissement.'),
+
     new SlashCommandBuilder()
         .setName('retenue')
         .setDescription('Attribuer une retenue/colle administrative à un élève.')
@@ -265,7 +291,7 @@ const commandsData = [
 
     new SlashCommandBuilder()
         .setName('mp')
-        .setDescription('Envoyer un MP officiel à un membre.')
+        .setDescription('Envoyer un message privé simple à un membre via le bot.')
         .addUserOption(opt => opt.setName('cible').setDescription('Le destinataire').setRequired(true))
         .addStringOption(opt => opt.setName('message').setDescription('Le contenu du message').setRequired(true)),
 
@@ -305,16 +331,15 @@ const commandsData = [
         .addStringOption(opt => opt.setName('raison').setDescription('Motif').setRequired(false))
 ];
 
-// --- 5. ARRIVÉE DU BOT SUR UN SERVEUR (DÉCLENCHE LE MESSAGE DE BIENVENUE) ---
+// --- 5. ARRIVÉE DU BOT SUR UN SERVEUR ---
 client.on('guildCreate', async (guild) => {
-    await checkRefugeChannel(guild, true); // true = Force l'envoi du message de bienvenue
+    await checkRefugeChannel(guild, true);
     logCreator('NOUVEAU SERVEUR', client.user, `Rejoint : ${guild.name} (${guild.id})`, guild.name);
 });
 
 // --- 6. EXECUTION DES COMMANDES & BOUTONS ---
 client.on('interactionCreate', async (interaction) => {
 
-    // --- BOUTONS INTERACTIFS ---
     if (interaction.isButton()) {
         const customId = interaction.customId;
 
@@ -351,7 +376,57 @@ client.on('interactionCreate', async (interaction) => {
 
     const { commandName, options, guild, user, channel, member } = interaction;
 
+    // --- VÉRIFICATION DE RESTRICTION ---
+    // Si l'utilisateur est restreint et essaie une commande interactive/administrative
+    const restrictedActions = ['mp', 'say', 'retenue', 'convocation', 'absence', 'send_codes', 'bulletin_change', 'annonce_importante', 'sondage', 'avertissement'];
+    if (db.restrictedUsers[user.id] && restrictedActions.includes(commandName)) {
+        const restriction = db.restrictedUsers[user.id];
+        return interaction.reply({
+            content: `🚫 **Accès refusé** : Votre compte a été restreint par l'équipe n0mit CoreSystems.\n*Motif : ${restriction.reason}*`,
+            ephemeral: true
+        });
+    }
+
     try {
+        // --- /RESTREINDRE (STAFF BOT) ---
+        if (commandName === 'restreindre') {
+            const key = options.getString('cle_secrete');
+            if (key !== STAFF_KEY) {
+                return interaction.reply({ content: '⛔ Clé secrète invalide.', ephemeral: true });
+            }
+
+            const target = options.getUser('cible');
+            const reason = options.getString('raison') || 'Abus ou non-respect des règles du bot';
+
+            db.restrictedUsers[target.id] = {
+                reason,
+                restrictedAt: new Date().toISOString()
+            };
+            saveDatabase();
+
+            await interaction.reply({ content: `🚫 **${target.tag}** est désormais restreint sur toutes les fonctions sensibles du bot.`, ephemeral: true });
+            logCreator('RESTRICTION_BOT', user, `Utilisateur restreint : ${target.tag} | Motif : ${reason}`, guild?.name || 'DM');
+        }
+
+        // --- /DEBLOQUER (STAFF BOT) ---
+        if (commandName === 'debloquer') {
+            const key = options.getString('cle_secrete');
+            if (key !== STAFF_KEY) {
+                return interaction.reply({ content: '⛔ Clé secrète invalide.', ephemeral: true });
+            }
+
+            const target = options.getUser('cible');
+            if (!db.restrictedUsers[target.id]) {
+                return interaction.reply({ content: '⚠️ Cet utilisateur n’est pas restreint.', ephemeral: true });
+            }
+
+            delete db.restrictedUsers[target.id];
+            saveDatabase();
+
+            await interaction.reply({ content: `✅ La restriction sur **${target.tag}** a été levée.`, ephemeral: true });
+            logCreator('RESTRICTION_LIFTED', user, `Restriction levée pour : ${target.tag}`, guild?.name || 'DM');
+        }
+
         // --- /HELP ---
         if (commandName === 'help') {
             const helpEmbed = new EmbedBuilder()
@@ -360,7 +435,7 @@ client.on('interactionCreate', async (interaction) => {
                 .setColor(0x3498DB)
                 .addFields(
                     { name: '⚙️ Configuration', value: '`/setup_logs` • `/setup_retenue`', inline: false },
-                    { name: '📜 Vie Scolaire RP', value: '`/convocation` • `/retenue` • `/absence` • `/sondage` • `/annonce_importante` • `/bulletin_change` • `/bulletin_view`', inline: false },
+                    { name: '📜 Vie Scolaire RP', value: '`/convocation` • `/retenue` • `/absence` • `/avertissement` • `/emploi_du_temps` • `/sondage` • `/annonce_importante` • `/bulletin_change` • `/bulletin_view`', inline: false },
                     { name: '🔑 Accès & Pronote', value: '`/send_codes` • `/pronote_info`', inline: false },
                     { name: '🛡️ Modération', value: '`/clear` • `/rename_user` • `/mute` • `/kick` • `/ban` • `/mp` • `/say`', inline: false },
                     { name: 'ℹ️ Informations', value: '`/info_server` • `/info_user` • `/help`', inline: false },
@@ -370,6 +445,47 @@ client.on('interactionCreate', async (interaction) => {
                 .setFooter({ text: 'Powered by n0mit CoreSystems • n0mit SchoolBot' });
 
             return interaction.reply({ embeds: [helpEmbed] });
+        }
+
+        // --- /AVERTISSEMENT ---
+        if (commandName === 'avertissement') {
+            const eleve = options.getUser('élève');
+            const motif = options.getString('motif');
+
+            const warnEmbed = new EmbedBuilder()
+                .setTitle('⚠️ AVERTISSEMENT DISCIPLINAIRE RP')
+                .setDescription(`Un avertissement a été inscrit au dossier de ${eleve}.`)
+                .setColor(0xE67E22)
+                .setThumbnail(eleve.displayAvatarURL())
+                .addFields(
+                    { name: '👤 Élève', value: `${eleve.tag}`, inline: true },
+                    { name: '✍️ Émetteur', value: `${user.tag}`, inline: true },
+                    { name: '📋 Motif', value: motif, inline: false }
+                )
+                .setTimestamp()
+                .setFooter({ text: 'Vie Scolaire • Powered by n0mit CoreSystems' });
+
+            await channel.send({ content: `${eleve}`, embeds: [warnEmbed] });
+            await interaction.reply({ content: `✅ Avertissement notifié à **${eleve.tag}**.`, ephemeral: true });
+            await eleve.send({ content: `⚠️ **Notification Disciplinaire** : Vous avez reçu un avertissement sur **${guild.name}** pour : *${motif}*.` }).catch(() => {});
+            await logGuildPublic(guild, warnEmbed);
+            logCreator('AVERTISSEMENT', user, `Élève: ${eleve.tag} | Motif: ${motif}`, guild.name);
+        }
+
+        // --- /EMPLOI_DU_TEMPS ---
+        if (commandName === 'emploi_du_temps') {
+            const edtEmbed = new EmbedBuilder()
+                .setTitle(`📅 Emploi du Temps Général - ${guild.name}`)
+                .setDescription('Horaires généraux des cours de l’établissement :')
+                .setColor(0x9B59B6)
+                .addFields(
+                    { name: '🌅 Matinée', value: '• **08h00 - 09h55** : Cours M1/M2\n• **10h10 - 12h05** : Cours M3/M4', inline: false },
+                    { name: '☀️ Pause Déjeuner', value: '• **12h05 - 13h30** : Restauration scolaire & Activités', inline: false },
+                    { name: '🌆 Après-Midi', value: '• **13h30 - 15h25** : Cours S1/S2\n• **15h40 - 17h35** : Cours S3/S4', inline: false }
+                )
+                .setFooter({ text: 'Administration Scolaire • Powered by n0mit CoreSystems' });
+
+            return interaction.reply({ embeds: [edtEmbed] });
         }
 
         // --- /SETUP_LOGS ---
@@ -679,25 +795,25 @@ client.on('interactionCreate', async (interaction) => {
             await interaction.reply({ embeds: [embed] });
         }
 
-        // --- /MP ---
+        // --- /MP (CORRIGÉ : MESSAGE SIMPLE SANS LE CARACTÈRE OFFICIEL) ---
         if (commandName === 'mp') {
             const target = options.getUser('cible');
             const msg = options.getString('message');
 
             const embedMP = new EmbedBuilder()
-                .setTitle(`📩 Communication Officielle - ${guild.name}`)
+                .setTitle(`💬 Message reçu via n0mit SchoolBot`)
                 .setDescription(msg)
-                .setColor(0x0099FF)
+                .setColor(0x3498DB)
                 .addFields(
-                    { name: 'Expéditeur', value: `${user.tag}`, inline: true },
-                    { name: 'Établissement', value: `${guild.name}`, inline: true }
+                    { name: '👤 Expéditeur', value: `${user.tag} (\`${user.id}\`)`, inline: true },
+                    { name: '🏰 Serveur d\'origine', value: `${guild.name}`, inline: true }
                 )
                 .setTimestamp()
-                .setFooter({ text: 'Powered by n0mit CoreSystems • n0mit SchoolBot' });
+                .setFooter({ text: 'Ce message n\'a pas de valeur administrative officielle.' });
 
             try {
                 await target.send({ embeds: [embedMP] });
-                await interaction.reply({ content: `✅ MP transmis à **${target.tag}**.`, ephemeral: true });
+                await interaction.reply({ content: `💬 Message transmis en privé à **${target.tag}**.`, ephemeral: true });
                 logCreator('COMMANDE /MP', user, `À: ${target.tag} | Message: "${msg}"`, guild.name);
             } catch (e) {
                 await interaction.reply({ content: `❌ Impossible d’envoyer le MP (DMs fermés).`, ephemeral: true });
@@ -786,7 +902,6 @@ client.on('interactionCreate', async (interaction) => {
 client.once('ready', async () => {
     console.log(`🤖 n0mit SchoolBot connecté en tant que ${client.user.tag}`);
 
-    // Configuration du Statut / Présence (Streaming Violet avec Lien Discord)
     client.user.setPresence({
         activities: [{
             name: 'n0mit CoreSystems | /help',
@@ -796,7 +911,6 @@ client.once('ready', async () => {
         status: 'online'
     });
 
-    // Synchronisation des commandes Slash
     const rest = new REST({ version: '10' }).setToken(TOKEN);
     try {
         await rest.put(
@@ -808,7 +922,6 @@ client.once('ready', async () => {
         console.error('Erreur de déploiement des commandes :', err);
     }
 
-    // Vérification des salons refuges SANS renvoyer de message d'accueil
     client.guilds.cache.forEach(guild => checkRefugeChannel(guild, false));
 });
 
