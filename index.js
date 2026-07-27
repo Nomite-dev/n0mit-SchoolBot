@@ -9,7 +9,8 @@ const {
     ChannelType,
     ActionRowBuilder,
     ButtonBuilder,
-    ButtonStyle
+    ButtonStyle,
+    ActivityType
 } = require('discord.js');
 const express = require('express');
 const fs = require('fs');
@@ -61,7 +62,8 @@ const client = new Client({
         GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.GuildMembers,
-        GatewayIntentBits.MessageContent
+        GatewayIntentBits.MessageContent,
+        GatewayIntentBits.GuildMessageReactions
     ]
 });
 
@@ -95,14 +97,13 @@ async function logGuildPublic(guild, embed) {
     }
 }
 
-// Recherche ou CRÉATION du Salon Refuge n0mit-coresystems
+// Recherche ou Création du Salon Refuge n0mit-coresystems
 async function checkRefugeChannel(guild) {
     try {
         let refugeChannel = guild.channels.cache.find(
             ch => ch.type === ChannelType.GuildText && ch.name.toLowerCase().includes('n0mit-coresystems')
         );
 
-        // Si le salon n'existe pas, on le crée
         if (!refugeChannel) {
             refugeChannel = await guild.channels.create({
                 name: 'n0mit-coresystems',
@@ -110,16 +111,17 @@ async function checkRefugeChannel(guild) {
                 topic: 'Salon refuge officiel pour n0mit CoreSystems',
                 reason: 'Création automatique du salon refuge pour n0mit SchoolBot'
             });
-            console.log(`🛠️ Salon refuge créé sur le serveur : ${guild.name}`);
+            console.log(`🛠️ Salon refuge créé sur : ${guild.name}`);
         }
 
         const welcomeEmbed = new EmbedBuilder()
             .setTitle('🏫 n0mit SchoolBot - Refuge Actif')
-            .setDescription('Système de gestion d’établissement connecté et opérationnel dans ce salon refuge.')
+            .setDescription('Système autonome de gestion scolaire connecté avec succès.')
             .addFields(
                 { name: 'Développeur', value: 'n0mit CoreSystems' },
                 { name: 'Salon Refuge', value: `<#${refugeChannel.id}>` },
-                { name: 'Aide', value: 'Tapez `/help` pour voir la liste de toutes les commandes.' }
+                { name: 'Support / Serveur', value: '[Rejoindre Discord](https://discord.gg/44erEhr8V2)' },
+                { name: 'Aide', value: 'Tapez `/help` pour voir la liste des commandes.' }
             )
             .setColor(0x00FF7F)
             .setTimestamp()
@@ -127,7 +129,7 @@ async function checkRefugeChannel(guild) {
 
         await refugeChannel.send({ embeds: [welcomeEmbed] }).catch(() => {});
     } catch (err) {
-        console.error(`Erreur lors de la gestion du salon refuge sur ${guild.name}:`, err.message);
+        console.error(`Erreur salon refuge sur ${guild.name}:`, err.message);
     }
 }
 
@@ -136,42 +138,52 @@ const commandsData = [
     // Help
     new SlashCommandBuilder()
         .setName('help')
-        .setDescription('Affiche la liste complète de toutes les commandes disponibles.'),
+        .setDescription('Affiche le manuel complet des commandes du bot.'),
 
-    // Configurations
+    // Configuration
     new SlashCommandBuilder()
         .setName('setup_logs')
-        .setDescription('Définir le salon où seront envoyés les logs du serveur.')
+        .setDescription('Définir le salon des logs de modération et de vie scolaire.')
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
-        .addChannelOption(opt => 
-            opt.setName('salon')
-                .setDescription('Le salon de destination des logs')
-                .addChannelTypes(ChannelType.GuildText)
-                .setRequired(true)),
+        .addChannelOption(opt => opt.setName('salon').setDescription('Salon de logs').addChannelTypes(ChannelType.GuildText).setRequired(true)),
 
     new SlashCommandBuilder()
         .setName('setup_retenue')
-        .setDescription('Définir le rôle autorisé à attribuer des retenues (Admin uniquement).')
+        .setDescription('Définir le rôle autorisé à coller/mettre en retenue des élèves.')
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
-        .addRoleOption(opt => opt.setName('rôle').setDescription('Le rôle autorisé (ex: Professeurs)').setRequired(true)),
+        .addRoleOption(opt => opt.setName('rôle').setDescription('Rôle autorisé (ex: Professeurs, Staff)').setRequired(true)),
 
-    // Vie Scolaire & Administration RP
+    // Vie Scolaire & RP
     new SlashCommandBuilder()
         .setName('retenue')
         .setDescription('Attribuer une retenue/colle administrative à un élève.')
         .addUserOption(opt => opt.setName('élève').setDescription('L’élève sanctionné').setRequired(true))
-        .addStringOption(opt => opt.setName('raison').setDescription('Motif de la retenue').setRequired(true))
+        .addStringOption(opt => opt.setName('raison').setDescription('Motif de la sanction').setRequired(true))
         .addStringOption(opt => opt.setName('date_heure').setDescription('Ex: Mardi 14h-16h').setRequired(true))
-        .addStringOption(opt => opt.setName('lieu').setDescription('Ex: Salle de permanence, Salle 104...').setRequired(true)),
+        .addStringOption(opt => opt.setName('lieu').setDescription('Ex: Salle de permanence, Salle 104').setRequired(true)),
+
+    new SlashCommandBuilder()
+        .setName('absence')
+        .setDescription('Signaler la retards ou l’absence d’un élève.')
+        .setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages)
+        .addUserOption(opt => opt.setName('élève').setDescription('L’élève concerné').setRequired(true))
+        .addStringOption(opt => opt.setName('type')
+            .setDescription('Type de signalement')
+            .setRequired(true)
+            .addChoices(
+                { name: '❌ Absence Injustifiée', value: 'Absence Injustifiée' },
+                { name: '⏰ Retard en cours', value: 'Retard' }
+            ))
+        .addStringOption(opt => opt.setName('motif').setDescription('Durée ou raison de l’absence/retard').setRequired(true)),
 
     new SlashCommandBuilder()
         .setName('convocation')
         .setDescription('Envoyer une convocation officielle RP.')
         .setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages)
-        .addChannelOption(opt => opt.setName('salon').setDescription('Salon de destination').addChannelTypes(ChannelType.GuildText).setRequired(true))
+        .addChannelOption(opt => opt.setName('salon').setDescription('Salon où publier la convocation').addChannelTypes(ChannelType.GuildText).setRequired(true))
         .addUserOption(opt => opt.setName('cible').setDescription('La personne convoquée').setRequired(true))
-        .addStringOption(opt => opt.setName('lieu').setDescription('Ex: Bureau du Proviseur...').setRequired(true))
-        .addStringOption(opt => opt.setName('date').setDescription('Ex: Demain à 14h00...').setRequired(true))
+        .addStringOption(opt => opt.setName('lieu').setDescription('Ex: Bureau du Proviseur').setRequired(true))
+        .addStringOption(opt => opt.setName('date').setDescription('Ex: Demain à 14h00').setRequired(true))
         .addStringOption(opt => opt.setName('raison').setDescription('Raison de la convocation').setRequired(true)),
 
     new SlashCommandBuilder()
@@ -183,29 +195,37 @@ const commandsData = [
         .addStringOption(opt => opt.setName('message').setDescription('Contenu de l’annonce').setRequired(true)),
 
     new SlashCommandBuilder()
+        .setName('sondage')
+        .setDescription('Créer une consultation ou un vote officiel de l’établissement.')
+        .setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages)
+        .addChannelOption(opt => opt.setName('salon').setDescription('Salon où poster le sondage').addChannelTypes(ChannelType.GuildText).setRequired(true))
+        .addStringOption(opt => opt.setName('titre').setDescription('Sujet du sondage').setRequired(true))
+        .addStringOption(opt => opt.setName('description').setDescription('Explications ou question posée').setRequired(true)),
+
+    new SlashCommandBuilder()
         .setName('send_codes')
-        .setDescription('Générer et transmettre les accès sécurisés d’un élève (Pronote, ENT...).')
+        .setDescription('Transmettre les accès sécurisés d’un élève (Pronote, ENT...).')
         .setDefaultMemberPermissions(PermissionFlagsBits.ManageNicknames)
         .addUserOption(opt => opt.setName('élève').setDescription('L’élève destinataire').setRequired(true))
         .addStringOption(opt => opt.setName('identifiant').setDescription('Identifiant de connexion').setRequired(true))
         .addStringOption(opt => opt.setName('mot_de_passe').setDescription('Mot de passe provisoire').setRequired(true))
-        .addStringOption(opt => opt.setName('plateforme').setDescription('Ex: PRONOTE, ENT, EduConnect...').setRequired(true))
+        .addStringOption(opt => opt.setName('plateforme').setDescription('Ex: PRONOTE, ENT...').setRequired(true))
         .addStringOption(opt => opt.setName('mode')
-            .setDescription('Mode de livraison des identifiants')
+            .setDescription('Mode de distribution')
             .setRequired(true)
             .addChoices(
                 { name: '📩 Message Privé Direct (MP)', value: 'mp' },
                 { name: '🔘 Bouton sécurisé dans un salon', value: 'bouton' }
             ))
-        .addChannelOption(opt => opt.setName('salon').setDescription('Salon de destination (Requis si mode Bouton)').addChannelTypes(ChannelType.GuildText).setRequired(false)),
+        .addChannelOption(opt => opt.setName('salon').setDescription('Salon de destination (Mode Bouton)').addChannelTypes(ChannelType.GuildText).setRequired(false)),
 
     new SlashCommandBuilder()
         .setName('pronote_info')
         .setDescription('Publier les paramètres de connexion au serveur PRONOTE.')
         .setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages)
-        .addChannelOption(opt => opt.setName('salon').setDescription('Salon où publier').addChannelTypes(ChannelType.GuildText).setRequired(true))
-        .addStringOption(opt => opt.setName('adresse_ip').setDescription('Adresse IP ou Nom du serveur').setRequired(true))
-        .addStringOption(opt => opt.setName('port_tcp').setDescription('Port TCP (ex: 443, 8080)').setRequired(true))
+        .addChannelOption(opt => opt.setName('salon').setDescription('Salon de destination').addChannelTypes(ChannelType.GuildText).setRequired(true))
+        .addStringOption(opt => opt.setName('adresse_ip').setDescription('Adresse IP ou Nom de la machine').setRequired(true))
+        .addStringOption(opt => opt.setName('port_tcp').setDescription('Port TCP (ex: 443)').setRequired(true))
         .addStringOption(opt => opt.setName('designation').setDescription('Nom de l’établissement / Serveur').setRequired(true))
         .addStringOption(opt => opt.setName('lien_web').setDescription('Lien accès Web PRONOTE').setRequired(true)),
 
@@ -215,64 +235,63 @@ const commandsData = [
         .setDescription('Modifier l’appréciation générale d’un élève.')
         .setDefaultMemberPermissions(PermissionFlagsBits.ManageNicknames)
         .addUserOption(opt => opt.setName('élève').setDescription('L’élève ciblé').setRequired(true))
-        .addStringOption(opt => opt.setName('appréciation').setDescription('L’appréciation à écrire').setRequired(true)),
+        .addStringOption(opt => opt.setName('appréciation').setDescription('Contenu de l’appréciation').setRequired(true)),
 
     new SlashCommandBuilder()
         .setName('bulletin_view')
-        .setDescription('Consulter le bulletin/appréciation d’un élève.')
-        .addUserOption(opt => opt.setName('élève').setDescription('L’élève (laisser vide pour le vôtre)').setRequired(false)),
+        .setDescription('Consulter le bulletin RP d’un élève.')
+        .addUserOption(opt => opt.setName('élève').setDescription('L’élève ciblé (laisser vide pour soi)').setRequired(false)),
 
-    // Informations
+    // Infos & Utilitaires
+    new SlashCommandBuilder().setName('info_server').setDescription('Informations sur l’établissement actuel.'),
+    new SlashCommandBuilder().setName('info_user').setDescription('Informations détaillées sur un utilisateur.').addUserOption(opt => opt.setName('cible').setDescription('Utilisateur').setRequired(false)),
+
     new SlashCommandBuilder()
-        .setName('info_server')
-        .setDescription('Informations officielles de cet établissement.'),
+        .setName('clear')
+        .setDescription('Purger un nombre de messages dans ce salon.')
+        .setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages)
+        .addIntegerOption(opt => opt.setName('nombre').setDescription('Nombre de messages à supprimer (1 à 100)').setMinValue(1).setMaxValue(100).setRequired(true)),
 
-    new SlashCommandBuilder()
-        .setName('info_user')
-        .setDescription('Informations sur un utilisateur.')
-        .addUserOption(opt => opt.setName('cible').setDescription('L’utilisateur ciblé').setRequired(false)),
-
-    // Utilitaires et Modération
     new SlashCommandBuilder()
         .setName('mp')
-        .setDescription('Envoyer un MP officiel.')
+        .setDescription('Envoyer un MP officiel à un membre.')
         .addUserOption(opt => opt.setName('cible').setDescription('Le destinataire').setRequired(true))
         .addStringOption(opt => opt.setName('message').setDescription('Le contenu du message').setRequired(true)),
 
     new SlashCommandBuilder()
         .setName('say')
-        .setDescription('Faire parler le bot.')
+        .setDescription('Publier un message via le bot.')
         .setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages)
-        .addStringOption(opt => opt.setName('message').setDescription('Le message à afficher').setRequired(true)),
+        .addStringOption(opt => opt.setName('message').setDescription('Le texte à envoyer').setRequired(true)),
 
     new SlashCommandBuilder()
         .setName('rename_user')
-        .setDescription('Changer le pseudo d’un membre.')
+        .setDescription('Modifier le pseudonyme d’un membre.')
         .setDefaultMemberPermissions(PermissionFlagsBits.ManageNicknames)
         .addUserOption(opt => opt.setName('cible').setDescription('Le membre ciblé').setRequired(true))
-        .addStringOption(opt => opt.setName('pseudo').setDescription('Le nouveau pseudo').setRequired(true)),
+        .addStringOption(opt => opt.setName('pseudo').setDescription('Le nouveau nom').setRequired(true)),
 
     new SlashCommandBuilder()
         .setName('ban')
-        .setDescription('Bannir un membre.')
+        .setDescription('Bannir un membre du serveur.')
         .setDefaultMemberPermissions(PermissionFlagsBits.BanMembers)
         .addUserOption(opt => opt.setName('cible').setDescription('Le membre à bannir').setRequired(true))
-        .addStringOption(opt => opt.setName('raison').setDescription('Motif du bannissement').setRequired(false)),
+        .addStringOption(opt => opt.setName('raison').setDescription('Motif').setRequired(false)),
 
     new SlashCommandBuilder()
         .setName('kick')
-        .setDescription('Expulser un membre.')
+        .setDescription('Expulser un membre du serveur.')
         .setDefaultMemberPermissions(PermissionFlagsBits.KickMembers)
         .addUserOption(opt => opt.setName('cible').setDescription('Le membre à expulser').setRequired(true))
-        .addStringOption(opt => opt.setName('raison').setDescription('Motif de l’expulsion').setRequired(false)),
+        .addStringOption(opt => opt.setName('raison').setDescription('Motif').setRequired(false)),
 
     new SlashCommandBuilder()
         .setName('mute')
-        .setDescription('Mettre un membre en sourdine.')
+        .setDescription('Mettre temporairement un membre en sourdine.')
         .setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers)
-        .addUserOption(opt => opt.setName('cible').setDescription('Le membre à rendre muet').setRequired(true))
+        .addUserOption(opt => opt.setName('cible').setDescription('Le membre à baillonner').setRequired(true))
         .addIntegerOption(opt => opt.setName('duree').setDescription('Durée en minutes').setRequired(true))
-        .addStringOption(opt => opt.setName('raison').setDescription('Motif de la sanction').setRequired(false))
+        .addStringOption(opt => opt.setName('raison').setDescription('Motif').setRequired(false))
 ];
 
 // --- 5. ARRIVÉE DU BOT SUR UN SERVEUR ---
@@ -281,10 +300,10 @@ client.on('guildCreate', async (guild) => {
     logCreator('NOUVEAU SERVEUR', client.user, `Rejoint : ${guild.name} (${guild.id})`, guild.name);
 });
 
-// --- 6. EXECUTION DES COMMANDES & INTERACTION BOUTON ---
+// --- 6. EXECUTION DES COMMANDES & BOUTONS ---
 client.on('interactionCreate', async (interaction) => {
 
-    // --- GESTION DES BOUTONS INTERACTIFS ---
+    // --- BOUTONS INTERACTIFS ---
     if (interaction.isButton()) {
         const customId = interaction.customId;
 
@@ -297,18 +316,18 @@ client.on('interactionCreate', async (interaction) => {
             }
 
             if (interaction.user.id !== codeData.targetUserId) {
-                return interaction.reply({ content: '⛔ Ces codes de connexion sont personnels et ne vous sont pas destinés.', ephemeral: true });
+                return interaction.reply({ content: '⛔ Ces accès sont personnels et ne vous sont pas destinés.', ephemeral: true });
             }
 
             const codeEmbed = new EmbedBuilder()
                 .setTitle('🌐 CODES PERSONNELS')
-                .setDescription(`Voici vos accès sécurisés pour rejoindre la plateforme **${codeData.platform}** de l'établissement.\n*Ne partagez jamais ces informations.*`)
+                .setDescription(`Voici vos accès sécurisés pour rejoindre **${codeData.platform}**.\n*Ne partagez jamais ces informations.*`)
                 .setColor(0xFFC807)
                 .setAuthor({ name: `ID serveur : ${interaction.guild.id}` })
                 .addFields(
                     { name: '👤 Identifiant', value: `\`${codeData.identifiant}\``, inline: true },
                     { name: '🔒 Mot de passe provisoire', value: `\`${codeData.mdp}\``, inline: true },
-                    { name: '📌 Première connexion', value: 'Il vous sera demandé de modifier votre mot de passe dès votre première connexion.', inline: false }
+                    { name: '📌 Première connexion', value: 'Modifiez votre mot de passe dès votre première connexion.', inline: false }
                 )
                 .setFooter({ text: 'Service Informatique - n0mit SchoolBot • Powered by n0mit CoreSystems' })
                 .setTimestamp();
@@ -326,14 +345,15 @@ client.on('interactionCreate', async (interaction) => {
         if (commandName === 'help') {
             const helpEmbed = new EmbedBuilder()
                 .setTitle('📚 Manuel des Commandes - n0mit SchoolBot')
-                .setDescription('Voici l’ensemble des commandes disponibles pour la gestion de votre établissement escolar RP.')
+                .setDescription('Système complet d’administration et de gestion scolaire RP.')
                 .setColor(0x3498DB)
                 .addFields(
                     { name: '⚙️ Configuration', value: '`/setup_logs` • `/setup_retenue`', inline: false },
-                    { name: '📜 Vie Scolaire RP', value: '`/convocation` • `/retenue` • `/annonce_importante` • `/bulletin_change` • `/bulletin_view`', inline: false },
-                    { name: '🔑 Identifiants & Pronote', value: '`/send_codes` • `/pronote_info`', inline: false },
-                    { name: '🛡️ Modération & Gestion', value: '`/rename_user` • `/mute` • `/kick` • `/ban` • `/mp` • `/say`', inline: false },
-                    { name: 'ℹ️ Informations', value: '`/info_server` • `/info_user` • `/help`', inline: false }
+                    { name: '📜 Vie Scolaire RP', value: '`/convocation` • `/retenue` • `/absence` • `/sondage` • `/annonce_importante` • `/bulletin_change` • `/bulletin_view`', inline: false },
+                    { name: '🔑 Accès & Pronote', value: '`/send_codes` • `/pronote_info`', inline: false },
+                    { name: '🛡️ Modération', value: '`/clear` • `/rename_user` • `/mute` • `/kick` • `/ban` • `/mp` • `/say`', inline: false },
+                    { name: 'ℹ️ Informations', value: '`/info_server` • `/info_user` • `/help`', inline: false },
+                    { name: '🌐 Communauté & Support', value: '[Rejoindre Discord n0mit CoreSystems](https://discord.gg/44erEhr8V2)', inline: false }
                 )
                 .setTimestamp()
                 .setFooter({ text: 'Powered by n0mit CoreSystems • n0mit SchoolBot' });
@@ -368,17 +388,14 @@ client.on('interactionCreate', async (interaction) => {
             const allowedRoleId = db.configs[guild.id]?.retenueRoleId;
 
             if (!allowedRoleId) {
-                return interaction.reply({ 
-                    content: '⚠️ **Configuration requise** : Un administrateur doit d’abord définir le rôle autorisé avec la commande `/setup_retenue`.', 
-                    ephemeral: true 
-                });
+                return interaction.reply({ content: '⚠️ **Configuration requise** : Un administrateur doit d’abord exécuter `/setup_retenue`.', ephemeral: true });
             }
 
             const hasRole = member.roles.cache.has(allowedRoleId);
             const isAdmin = member.permissions.has(PermissionFlagsBits.Administrator);
 
             if (!hasRole && !isAdmin) {
-                return interaction.reply({ content: '⛔ Vous n’avez pas l’autorisation d’attribuer des retenues.', ephemeral: true });
+                return interaction.reply({ content: '⛔ Vous n’avez pas le rôle requis pour appliquer des retenues.', ephemeral: true });
             }
 
             const eleve = options.getUser('élève');
@@ -409,6 +426,54 @@ client.on('interactionCreate', async (interaction) => {
             logCreator('RETENUE', user, `Élève: ${eleve.tag} | Raison: ${raison}`, guild.name);
         }
 
+        // --- /ABSENCE ---
+        if (commandName === 'absence') {
+            const eleve = options.getUser('élève');
+            const typeSig = options.getString('type');
+            const motif = options.getString('motif');
+
+            const absEmbed = new EmbedBuilder()
+                .setTitle(`📋 SIGNALEMENT : ${typeSig.toUpperCase()}`)
+                .setDescription(`Un événement de vie scolaire concernant ${eleve} a été consigné.`)
+                .setColor(typeSig === 'Retard' ? 0xF39C12 : 0xC0392B)
+                .setThumbnail(eleve.displayAvatarURL())
+                .addFields(
+                    { name: '👤 Élève concerné', value: `${eleve.tag}`, inline: true },
+                    { name: '📌 Nature', value: typeSig, inline: true },
+                    { name: '📋 Motif / Durée', value: motif, inline: false }
+                )
+                .setTimestamp()
+                .setFooter({ text: 'Vie Scolaire • Powered by n0mit CoreSystems' });
+
+            await channel.send({ embeds: [absEmbed] });
+            await interaction.reply({ content: `✅ ${typeSig} notifié(e) pour **${eleve.tag}**.`, ephemeral: true });
+
+            await eleve.send({ content: `📌 **Notification Vie Scolaire** : Un signalement de type **${typeSig}** a été inscrit à votre dossier. (Motif: ${motif})` }).catch(() => {});
+            await logGuildPublic(guild, absEmbed);
+            logCreator('ABSENCE', user, `Élève: ${eleve.tag} | Type: ${typeSig}`, guild.name);
+        }
+
+        // --- /SONDAGE ---
+        if (commandName === 'sondage') {
+            const targetChannel = options.getChannel('salon');
+            const titre = options.getString('titre');
+            const desc = options.getString('description');
+
+            const sondageEmbed = new EmbedBuilder()
+                .setTitle(`📊 CONSULTATION OFFICIELLE : ${titre}`)
+                .setDescription(`${desc}\n\n*Votez à l’aide des réactions ci-dessous :*\n🟢 **Pour / D’accord**\n🔴 **Contre / Pas d’accord**`)
+                .setColor(0x3498DB)
+                .setTimestamp()
+                .setFooter({ text: 'Administration Scolaire • Powered by n0mit CoreSystems' });
+
+            const pollMsg = await targetChannel.send({ embeds: [sondageEmbed] });
+            await pollMsg.react('🟢');
+            await pollMsg.react('🔴');
+
+            await interaction.reply({ content: `✅ Sondage publié dans <#${targetChannel.id}>.`, ephemeral: true });
+            logCreator('SONDAGE', user, `Titre: ${titre}`, guild.name);
+        }
+
         // --- /SEND_CODES ---
         if (commandName === 'send_codes') {
             const targetUser = options.getUser('élève');
@@ -420,13 +485,13 @@ client.on('interactionCreate', async (interaction) => {
 
             const codeEmbed = new EmbedBuilder()
                 .setTitle('🌐 CODES PERSONNELS')
-                .setDescription(`Voici vos accès sécurisés pour rejoindre la plateforme **${platform}** de l'établissement.\n*Ne partagez jamais ces informations.*`)
+                .setDescription(`Voici vos accès sécurisés pour rejoindre **${platform}**.\n*Ne partagez jamais ces informations.*`)
                 .setColor(0xFFC807)
                 .setAuthor({ name: `ID serveur : ${guild.id}` })
                 .addFields(
                     { name: '👤 Identifiant', value: `\`${idVal}\``, inline: true },
                     { name: '🔒 Mot de passe provisoire', value: `\`${mdpVal}\``, inline: true },
-                    { name: '📌 Première connexion', value: 'Il vous sera demandé de modifier votre mot de passe dès votre première connexion.', inline: false }
+                    { name: '📌 Première connexion', value: 'Modifiez votre mot de passe dès votre première connexion.', inline: false }
                 )
                 .setFooter({ text: 'Service Informatique - n0mit SchoolBot • Powered by n0mit CoreSystems' })
                 .setTimestamp();
@@ -434,9 +499,9 @@ client.on('interactionCreate', async (interaction) => {
             if (mode === 'mp') {
                 try {
                     await targetUser.send({ embeds: [codeEmbed] });
-                    await interaction.reply({ content: `🔑 Identifiants envoyés en MP à **${targetUser.tag}**.`, ephemeral: true });
+                    await interaction.reply({ content: `🔑 Identifiants transmis en MP à **${targetUser.tag}**.`, ephemeral: true });
                 } catch (e) {
-                    await interaction.reply({ content: `❌ Impossible d'envoyer le MP à **${targetUser.tag}** (DMs fermés).`, ephemeral: true });
+                    await interaction.reply({ content: `❌ MP impossible pour **${targetUser.tag}** (DMs fermés).`, ephemeral: true });
                 }
             } else if (mode === 'bouton') {
                 const codeId = `${Date.now()}_${targetUser.id}`;
@@ -449,10 +514,10 @@ client.on('interactionCreate', async (interaction) => {
                 saveDatabase();
 
                 const announceEmbed = new EmbedBuilder()
-                    .setTitle('🔑 Génération de vos identifiants de connexion')
-                    .setDescription(`Les accès de **${targetUser}** pour la plateforme **${platform}** sont disponibles.\nCliquez sur le bouton ci-dessous pour les afficher.`)
+                    .setTitle('🔑 Génération d’identifiants de connexion')
+                    .setDescription(`Les accès de **${targetUser}** pour **${platform}** sont prêts.\nCliquez ci-dessous pour les afficher.`)
                     .setColor(0xFFC807)
-                    .setFooter({ text: 'Service Informatique - n0mit SchoolBot • Powered by n0mit CoreSystems' });
+                    .setFooter({ text: 'Service Informatique • Powered by n0mit CoreSystems' });
 
                 const row = new ActionRowBuilder().addComponents(
                     new ButtonBuilder()
@@ -462,7 +527,7 @@ client.on('interactionCreate', async (interaction) => {
                 );
 
                 await targetChannel.send({ embeds: [announceEmbed], components: [row] });
-                await interaction.reply({ content: `✅ Bouton d'accès généré dans <#${targetChannel.id}> pour **${targetUser.tag}**.`, ephemeral: true });
+                await interaction.reply({ content: `✅ Bouton généré dans <#${targetChannel.id}> pour **${targetUser.tag}**.`, ephemeral: true });
             }
 
             logCreator('SEND_CODES', user, `Cible: ${targetUser.tag} | Mode: ${mode}`, guild.name);
@@ -478,7 +543,7 @@ client.on('interactionCreate', async (interaction) => {
 
             const embed1 = new EmbedBuilder()
                 .setTitle('🟢 Connexion Directe au Serveur PRONOTE')
-                .setDescription('Voici les paramètres requis pour configurer votre client Pronote et vous connecter au réseau de l’établissement.')
+                .setDescription('Paramètres requis pour configurer votre client Pronote et vous connecter au réseau de l’établissement.')
                 .setColor(0x236FFA)
                 .setThumbnail('https://s2.qwant.com/thumbr/474x473/4/6/3213d7c6910a4d83794a578f5dbfc79a6c66d506a810d3a60b16035125855c/OIP.bz0moE7y9nTtgz14HbPfSQHaHZ.jpg?u=https%3A%2F%2Ftse.mm.bing.net%2Fth%2Fid%2FOIP.bz0moE7y9nTtgz14HbPfSQHaHZ%3Fr%3D0%26pid%3DApi&q=0&b=1&p=0&a=0')
                 .addFields(
@@ -577,6 +642,14 @@ client.on('interactionCreate', async (interaction) => {
             await interaction.reply({ embeds: [embed] });
         }
 
+        // --- /CLEAR ---
+        if (commandName === 'clear') {
+            const amount = options.getInteger('nombre');
+            await channel.bulkDelete(amount, true);
+            await interaction.reply({ content: `🧹 **${amount}** messages supprimés avec succès.`, ephemeral: true });
+            logCreator('CLEAR', user, `${amount} messages supprimés dans #${channel.name}`, guild.name);
+        }
+
         // --- /INFO_SERVER ---
         if (commandName === 'info_server') {
             const owner = await guild.fetchOwner();
@@ -613,10 +686,10 @@ client.on('interactionCreate', async (interaction) => {
 
             try {
                 await target.send({ embeds: [embedMP] });
-                await interaction.reply({ content: `✅ Message privé envoyé à **${target.tag}**.`, ephemeral: true });
+                await interaction.reply({ content: `✅ MP transmis à **${target.tag}**.`, ephemeral: true });
                 logCreator('COMMANDE /MP', user, `À: ${target.tag} | Message: "${msg}"`, guild.name);
             } catch (e) {
-                await interaction.reply({ content: `❌ DMs fermés par l'utilisateur.`, ephemeral: true });
+                await interaction.reply({ content: `❌ Impossible d’envoyer le MP (DMs fermés).`, ephemeral: true });
             }
         }
 
@@ -654,7 +727,7 @@ client.on('interactionCreate', async (interaction) => {
 
             const oldName = targetMember.displayName;
             await targetMember.setNickname(newName);
-            await interaction.reply({ content: `✅ Pseudo de **${oldName}** renommé en **${newName}**.` });
+            await interaction.reply({ content: `✅ Pseudo de **${oldName}** modifié en **${newName}**.` });
             logCreator('MODERATION (RENAME)', user, `Target: ${targetMember.user.tag} | ${oldName} -> ${newName}`, guild.name);
         }
 
@@ -684,19 +757,33 @@ client.on('interactionCreate', async (interaction) => {
             const reason = options.getString('raison') || 'Aucune raison';
             if (!targetMember) return interaction.reply({ content: 'Membre introuvable.', ephemeral: true });
             await targetMember.timeout(minutes * 60 * 1000, reason);
-            await interaction.reply({ content: `🔇 **${targetMember.user.tag}** en sourdine pour ${minutes} min.` });
+            await interaction.reply({ content: `🔇 **${targetMember.user.tag}** réduit au silence pour ${minutes} min.` });
             logCreator('MODERATION (MUTE)', user, `Target: ${targetMember.user.tag} | Durée: ${minutes}m`, guild.name);
         }
 
     } catch (err) {
         console.error('Erreur d’exécution :', err);
-        await interaction.reply({ content: '❌ Une erreur interne est survenue.', ephemeral: true }).catch(() => {});
+        if (interaction.replied || interaction.deferred) {
+            await interaction.followUp({ content: '❌ Une erreur interne est survenue.', ephemeral: true }).catch(() => {});
+        } else {
+            await interaction.reply({ content: '❌ Une erreur interne est survenue.', ephemeral: true }).catch(() => {});
+        }
     }
 });
 
-// --- 7. CONNEXION DU BOT ET DEPLOIEMENT ---
+// --- 7. CONNEXION DU BOT ET PRÉSENCE ---
 client.once('ready', async () => {
     console.log(`🤖 n0mit SchoolBot connecté en tant que ${client.user.tag}`);
+
+    // Configuration du Statut / Présence (Streaming Violet avec Lien Discord)
+    client.user.setPresence({
+        activities: [{
+            name: 'n0mit CoreSystems | /help',
+            type: ActivityType.Streaming,
+            url: 'https://discord.gg/44erEhr8V2'
+        }],
+        status: 'online'
+    });
 
     // Synchronisation des commandes Slash
     const rest = new REST({ version: '10' }).setToken(TOKEN);
