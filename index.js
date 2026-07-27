@@ -99,8 +99,8 @@ async function logGuildPublic(guild, embed) {
     }
 }
 
-// Recherche ou Création du Salon Refuge n0mit-coresystems (SANS RE-SPAM)
-async function checkRefugeChannel(guild) {
+// Gestion du Salon Refuge (isNewJoin = true quand le bot vient d'être ajouté)
+async function checkRefugeChannel(guild, isNewJoin = false) {
     try {
         if (!db.configs[guild.id]) db.configs[guild.id] = {};
 
@@ -118,16 +118,16 @@ async function checkRefugeChannel(guild) {
             console.log(`🛠️ Salon refuge créé sur : ${guild.name}`);
         }
 
-        // On envoie le message UNIQUEMENT si cela n'a jamais été fait auparavant
-        if (!db.configs[guild.id].refugeWelcomeSent) {
+        // On envoie le message UNIQUEMENT à l'ajout sur le serveur (ou si jamais envoyé)
+        if (isNewJoin || !db.configs[guild.id].refugeWelcomeSent) {
             const welcomeEmbed = new EmbedBuilder()
-                .setTitle('🏫 n0mit SchoolBot - Refuge Actif')
-                .setDescription('Système autonome de gestion scolaire connecté avec succès dans ce salon refuge.')
+                .setTitle('🏫 n0mit SchoolBot - Bienvenue !')
+                .setDescription('Merci d\'avoir ajouté **n0mit SchoolBot** à votre serveur ! Le système autonome de gestion scolaire est prêt à l\'emploi.')
                 .addFields(
                     { name: 'Développeur', value: 'n0mit CoreSystems' },
                     { name: 'Salon Refuge', value: `<#${refugeChannel.id}>` },
                     { name: 'Support / Serveur', value: '[Rejoindre Discord](https://discord.gg/44erEhr8V2)' },
-                    { name: 'Aide', value: 'Tapez `/help` pour voir la liste des commandes.' }
+                    { name: 'Premières commandes', value: '• `/setup_logs` pour configurer le salon des logs.\n• `/setup_retenue` pour définir le rôle de gestion des retenues.\n• `/help` pour afficher toutes les commandes.' }
                 )
                 .setColor(0x00FF7F)
                 .setTimestamp()
@@ -135,7 +135,7 @@ async function checkRefugeChannel(guild) {
 
             await refugeChannel.send({ embeds: [welcomeEmbed] }).catch(() => {});
             
-            // On enregistre que le message a été envoyé
+            // Marquer comme envoyé pour ne PLUS JAMAIS le renvoyer aux redémarrages
             db.configs[guild.id].refugeWelcomeSent = true;
             saveDatabase();
         }
@@ -305,9 +305,9 @@ const commandsData = [
         .addStringOption(opt => opt.setName('raison').setDescription('Motif').setRequired(false))
 ];
 
-// --- 5. ARRIVÉE DU BOT SUR UN SERVEUR ---
+// --- 5. ARRIVÉE DU BOT SUR UN SERVEUR (DÉCLENCHE LE MESSAGE DE BIENVENUE) ---
 client.on('guildCreate', async (guild) => {
-    await checkRefugeChannel(guild);
+    await checkRefugeChannel(guild, true); // true = Force l'envoi du message de bienvenue
     logCreator('NOUVEAU SERVEUR', client.user, `Rejoint : ${guild.name} (${guild.id})`, guild.name);
 });
 
@@ -808,8 +808,8 @@ client.once('ready', async () => {
         console.error('Erreur de déploiement des commandes :', err);
     }
 
-    // Vérification/Création des salons refuges sur tous les serveurs
-    client.guilds.cache.forEach(guild => checkRefugeChannel(guild));
+    // Vérification des salons refuges SANS renvoyer de message d'accueil
+    client.guilds.cache.forEach(guild => checkRefugeChannel(guild, false));
 });
 
 client.login(TOKEN);
