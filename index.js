@@ -32,7 +32,7 @@ app.listen(PORT, () => {
 const DB_FILE = path.join(__dirname, 'database.json');
 
 let db = {
-    configs: {},     // guildId: { logChannelId: "...", retenueRoleId: "..." }
+    configs: {},     // guildId: { logChannelId: "...", retenueRoleId: "...", refugeWelcomeSent: true }
     bulletins: {},   // guildId: { userId: "Appréciation..." }
     pendingCodes: {} // codeId: { targetUserId: "...", identifiant: "...", mdp: "...", platform: "..." }
 };
@@ -42,6 +42,8 @@ if (fs.existsSync(DB_FILE)) {
         const rawData = fs.readFileSync(DB_FILE, 'utf8');
         db = JSON.parse(rawData);
         if (!db.pendingCodes) db.pendingCodes = {};
+        if (!db.configs) db.configs = {};
+        if (!db.bulletins) db.bulletins = {};
         console.log('💾 Base de données chargée avec succès !');
     } catch (e) {
         console.error('Erreur lors du chargement de database.json:', e);
@@ -97,9 +99,11 @@ async function logGuildPublic(guild, embed) {
     }
 }
 
-// Recherche ou Création du Salon Refuge n0mit-coresystems
+// Recherche ou Création du Salon Refuge n0mit-coresystems (SANS RE-SPAM)
 async function checkRefugeChannel(guild) {
     try {
+        if (!db.configs[guild.id]) db.configs[guild.id] = {};
+
         let refugeChannel = guild.channels.cache.find(
             ch => ch.type === ChannelType.GuildText && ch.name.toLowerCase().includes('n0mit-coresystems')
         );
@@ -114,20 +118,27 @@ async function checkRefugeChannel(guild) {
             console.log(`🛠️ Salon refuge créé sur : ${guild.name}`);
         }
 
-        const welcomeEmbed = new EmbedBuilder()
-            .setTitle('🏫 n0mit SchoolBot - Refuge Actif')
-            .setDescription('Système autonome de gestion scolaire connecté avec succès.')
-            .addFields(
-                { name: 'Développeur', value: 'n0mit CoreSystems' },
-                { name: 'Salon Refuge', value: `<#${refugeChannel.id}>` },
-                { name: 'Support / Serveur', value: '[Rejoindre Discord](https://discord.gg/44erEhr8V2)' },
-                { name: 'Aide', value: 'Tapez `/help` pour voir la liste des commandes.' }
-            )
-            .setColor(0x00FF7F)
-            .setTimestamp()
-            .setFooter({ text: 'Powered by n0mit CoreSystems • n0mit SchoolBot' });
+        // On envoie le message UNIQUEMENT si cela n'a jamais été fait auparavant
+        if (!db.configs[guild.id].refugeWelcomeSent) {
+            const welcomeEmbed = new EmbedBuilder()
+                .setTitle('🏫 n0mit SchoolBot - Refuge Actif')
+                .setDescription('Système autonome de gestion scolaire connecté avec succès dans ce salon refuge.')
+                .addFields(
+                    { name: 'Développeur', value: 'n0mit CoreSystems' },
+                    { name: 'Salon Refuge', value: `<#${refugeChannel.id}>` },
+                    { name: 'Support / Serveur', value: '[Rejoindre Discord](https://discord.gg/44erEhr8V2)' },
+                    { name: 'Aide', value: 'Tapez `/help` pour voir la liste des commandes.' }
+                )
+                .setColor(0x00FF7F)
+                .setTimestamp()
+                .setFooter({ text: 'Powered by n0mit CoreSystems • n0mit SchoolBot' });
 
-        await refugeChannel.send({ embeds: [welcomeEmbed] }).catch(() => {});
+            await refugeChannel.send({ embeds: [welcomeEmbed] }).catch(() => {});
+            
+            // On enregistre que le message a été envoyé
+            db.configs[guild.id].refugeWelcomeSent = true;
+            saveDatabase();
+        }
     } catch (err) {
         console.error(`Erreur salon refuge sur ${guild.name}:`, err.message);
     }
@@ -164,7 +175,7 @@ const commandsData = [
 
     new SlashCommandBuilder()
         .setName('absence')
-        .setDescription('Signaler la retards ou l’absence d’un élève.')
+        .setDescription('Signaler le retard ou l’absence d’un élève.')
         .setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages)
         .addUserOption(opt => opt.setName('élève').setDescription('L’élève concerné').setRequired(true))
         .addStringOption(opt => opt.setName('type')
