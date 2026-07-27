@@ -6,7 +6,10 @@ const {
     SlashCommandBuilder, 
     PermissionFlagsBits, 
     EmbedBuilder, 
-    ChannelType 
+    ChannelType,
+    ActionRowBuilder,
+    ButtonBuilder,
+    ButtonStyle
 } = require('discord.js');
 const express = require('express');
 const fs = require('fs');
@@ -27,24 +30,23 @@ app.listen(PORT, () => {
 // --- 2. GESTION DE LA BASE DE DONNÉES LOCALE PERSISTANTE ---
 const DB_FILE = path.join(__dirname, 'database.json');
 
-// Structure initiale par défaut
 let db = {
-    configs: {},  // guildId: { logChannelId: "..." }
-    bulletins: {} // guildId: { userId: "Appréciation..." }
+    configs: {},     // guildId: { logChannelId: "...", retenueRoleId: "..." }
+    bulletins: {},   // guildId: { userId: "Appréciation..." }
+    pendingCodes: {} // codeId: { targetUserId: "...", identifiant: "...", mdp: "...", platform: "..." }
 };
 
-// Charger les données au démarrage s'il existe
 if (fs.existsSync(DB_FILE)) {
     try {
         const rawData = fs.readFileSync(DB_FILE, 'utf8');
         db = JSON.parse(rawData);
+        if (!db.pendingCodes) db.pendingCodes = {};
         console.log('💾 Base de données chargée avec succès !');
     } catch (e) {
         console.error('Erreur lors du chargement de database.json:', e);
     }
 }
 
-// Fonction pour sauvegarder les données dans database.json
 function saveDatabase() {
     try {
         fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2), 'utf8');
@@ -93,9 +95,33 @@ async function logGuildPublic(guild, embed) {
     }
 }
 
+// Recherche & Initialisation du Salon Refuge
+async function checkRefugeChannel(guild) {
+    const refugeChannel = guild.channels.cache.find(
+        ch => ch.type === ChannelType.GuildText && ch.name.toLowerCase().includes('n0mit-coresystems')
+    ) || guild.channels.cache.find(
+        ch => ch.type === ChannelType.GuildText && ch.name.toLowerCase().includes('n0mit')
+    );
+
+    if (refugeChannel) {
+        const welcomeEmbed = new EmbedBuilder()
+            .setTitle('🏫 n0mit SchoolBot - Refuge Actif')
+            .setDescription('Système de gestion d’établissement connecté et opérationnel.')
+            .addFields(
+                { name: 'Développeur', value: 'n0mit CoreSystems' },
+                { name: 'Refuge détecté', value: `<#${refugeChannel.id}>` }
+            )
+            .setColor(0x00FF7F)
+            .setTimestamp()
+            .setFooter({ text: 'Powered by n0mit CoreSystems • n0mit SchoolBot' });
+
+        await refugeChannel.send({ embeds: [welcomeEmbed] }).catch(() => {});
+    }
+}
+
 // --- 4. DÉFINITION DES COMMANDES SLASH ---
 const commandsData = [
-    // Configuration
+    // Configuration des logs
     new SlashCommandBuilder()
         .setName('setup_logs')
         .setDescription('Définir le salon où seront envoyés les logs du serveur.')
@@ -106,15 +132,60 @@ const commandsData = [
                 .addChannelTypes(ChannelType.GuildText)
                 .setRequired(true)),
 
+    // Configuration du rôle pour mettre des retenues
+    new SlashCommandBuilder()
+        .setName('setup_retenue')
+        .setDescription('Définir le rôle autorisé à attribuer des retenues/colles (Admin uniquement).')
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+        .addRoleOption(opt => opt.setName('rôle').setDescription('Le rôle autorisé (ex: Professeurs, Staff)').setRequired(true)),
+
+    // Commande Retenue / Colle
+    new SlashCommandBuilder()
+        .setName('retenue')
+        .setDescription('Attribuer une retenue/colle administrative à un élève.')
+        .addUserOption(opt => opt.setName('élève').setDescription('L’élève sanctionné').setRequired(true))
+        .addStringOption(opt => opt.setName('raison').setDescription('Motif de la retenue').setRequired(true))
+        .addStringOption(opt => opt.setName('date_heure').setDescription('Ex: Mardi 14h-16h').setRequired(true))
+        .addStringOption(opt => opt.setName('lieu').setDescription('Ex: Salle de permanence, Salle 104...').setRequired(true)),
+
+    // Envoi de codes d'accès (Pronote / ENT)
+    new SlashCommandBuilder()
+        .setName('send_codes')
+        .setDescription('Générer et transmettre les accès sécurisés d’un élève (Pronote, ENT...).')
+        .setDefaultMemberPermissions(PermissionFlagsBits.ManageNicknames)
+        .addUserOption(opt => opt.setName('élève').setDescription('L’élève destinataire').setRequired(true))
+        .addStringOption(opt => opt.setName('identifiant').setDescription('Identifiant de connexion').setRequired(true))
+        .addStringOption(opt => opt.setName('mot_de_passe').setDescription('Mot de passe provisoire').setRequired(true))
+        .addStringOption(opt => opt.setName('plateforme').setDescription('Ex: PRONOTE, ENT, EduConnect...').setRequired(true))
+        .addStringOption(opt => opt.setName('mode')
+            .setDescription('Mode de livraison des identifiants')
+            .setRequired(true)
+            .addChoices(
+                { name: '📩 Message Privé Direct (MP)', value: 'mp' },
+                { name: '🔘 Bouton sécurisé dans un salon', value: 'bouton' }
+            ))
+        .addChannelOption(opt => opt.setName('salon').setDescription('Salon de destination (Requis si mode Bouton)').addChannelTypes(ChannelType.GuildText).setRequired(false)),
+
+    // Affichage des infos PRONOTE
+    new SlashCommandBuilder()
+        .setName('pronote_info')
+        .setDescription('Publier les paramètres de connexion au serveur PRONOTE.')
+        .setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages)
+        .addChannelOption(opt => opt.setName('salon').setDescription('Salon où publier').addChannelTypes(ChannelType.GuildText).setRequired(true))
+        .addStringOption(opt => opt.setName('adresse_ip').setDescription('Adresse IP ou Nom du serveur').setRequired(true))
+        .addStringOption(opt => opt.setName('port_tcp').setDescription('Port TCP (ex: 443, 8080)').setRequired(true))
+        .addStringOption(opt => opt.setName('designation').setDescription('Nom de l’établissement / Serveur').setRequired(true))
+        .addStringOption(opt => opt.setName('lien_web').setDescription('Lien accès Web PRONOTE').setRequired(true)),
+
     // Convocation RP
     new SlashCommandBuilder()
         .setName('convocation')
-        .setDescription('Envoyer une convocation officielle RP à un élève/membre.')
+        .setDescription('Envoyer une convocation officielle RP.')
         .setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages)
-        .addChannelOption(opt => opt.setName('salon').setDescription('Salon où afficher la convocation').addChannelTypes(ChannelType.GuildText).setRequired(true))
+        .addChannelOption(opt => opt.setName('salon').setDescription('Salon de destination').addChannelTypes(ChannelType.GuildText).setRequired(true))
         .addUserOption(opt => opt.setName('cible').setDescription('La personne convoquée').setRequired(true))
-        .addStringOption(opt => opt.setName('lieu').setDescription('Ex: Bureau du Proviseur, Salle 102...').setRequired(true))
-        .addStringOption(opt => opt.setName('date').setDescription('Ex: Demain à 14h00, Lundi 12 Octobre...').setRequired(true))
+        .addStringOption(opt => opt.setName('lieu').setDescription('Ex: Bureau du Proviseur...').setRequired(true))
+        .addStringOption(opt => opt.setName('date').setDescription('Ex: Demain à 14h00...').setRequired(true))
         .addStringOption(opt => opt.setName('raison').setDescription('Raison de la convocation').setRequired(true)),
 
     // Annonce Importante RP
@@ -129,118 +200,239 @@ const commandsData = [
     // Bulletins RP
     new SlashCommandBuilder()
         .setName('bulletin_change')
-        .setDescription('Modifier l’appréciation générale sur le bulletin d’un élève.')
+        .setDescription('Modifier l’appréciation générale d’un élève.')
         .setDefaultMemberPermissions(PermissionFlagsBits.ManageNicknames)
         .addUserOption(opt => opt.setName('élève').setDescription('L’élève ciblé').setRequired(true))
-        .addStringOption(opt => opt.setName('appréciation').setDescription('L’appréciation ou note générale').setRequired(true)),
+        .addStringOption(opt => opt.setName('appréciation').setDescription('L’appréciation').setRequired(true)),
 
     new SlashCommandBuilder()
         .setName('bulletin_view')
         .setDescription('Consulter le bulletin/appréciation d’un élève.')
-        .addUserOption(opt => opt.setName('élève').setDescription('L’élève (laisser vide pour voir le vôtre)').setRequired(false)),
+        .addUserOption(opt => opt.setName('élève').setDescription('L’élève').setRequired(false)),
 
     // Informations
-    new SlashCommandBuilder()
-        .setName('info_server')
-        .setDescription('Afficher les informations officielles de cet établissement.'),
+    new SlashCommandBuilder().setName('info_server').setDescription('Informations officielles de cet établissement.'),
+    new SlashCommandBuilder().setName('info_user').setDescription('Informations sur un utilisateur.').addUserOption(opt => opt.setName('cible').setRequired(false)),
 
-    new SlashCommandBuilder()
-        .setName('info_user')
-        .setDescription('Afficher les informations détaillées d’un utilisateur.')
-        .addUserOption(opt => opt.setName('cible').setDescription('Utilisateur ciblé').setRequired(false)),
-
-    // Communications & Modération
-    new SlashCommandBuilder()
-        .setName('mp')
-        .setDescription('Envoyer un MP officiel à un membre depuis ce serveur.')
-        .addUserOption(opt => opt.setName('cible').setDescription('Le destinataire').setRequired(true))
-        .addStringOption(opt => opt.setName('message').setDescription('Le contenu du message').setRequired(true)),
-
-    new SlashCommandBuilder()
-        .setName('say')
-        .setDescription('Faire parler le bot dans le salon.')
-        .setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages)
-        .addStringOption(opt => opt.setName('message').setDescription('Le message à afficher').setRequired(true)),
-
-    new SlashCommandBuilder()
-        .setName('rename_user')
-        .setDescription('Changer le pseudo d’un membre.')
-        .setDefaultMemberPermissions(PermissionFlagsBits.ManageNicknames)
-        .addUserOption(opt => opt.setName('cible').setDescription('Le membre').setRequired(true))
-        .addStringOption(opt => opt.setName('pseudo').setDescription('Nouveau pseudo').setRequired(true)),
-
-    new SlashCommandBuilder()
-        .setName('ban')
-        .setDescription('Bannir un membre.')
-        .setDefaultMemberPermissions(PermissionFlagsBits.BanMembers)
-        .addUserOption(opt => opt.setName('cible').setDescription('Le membre').setRequired(true))
-        .addStringOption(opt => opt.setName('raison').setDescription('Raison').setRequired(false)),
-
-    new SlashCommandBuilder()
-        .setName('kick')
-        .setDescription('Expulser un membre.')
-        .setDefaultMemberPermissions(PermissionFlagsBits.KickMembers)
-        .addUserOption(opt => opt.setName('cible').setDescription('Le membre').setRequired(true))
-        .addStringOption(opt => opt.setName('raison').setDescription('Raison').setRequired(false)),
-
-    new SlashCommandBuilder()
-        .setName('mute')
-        .setDescription('Mettre un membre en sourdine.')
-        .setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers)
-        .addUserOption(opt => opt.setName('cible').setDescription('Le membre').setRequired(true))
-        .addIntegerOption(opt => opt.setName('duree').setDescription('Durée en minutes').setRequired(true))
-        .addStringOption(opt => opt.setName('raison').setDescription('Raison').setRequired(false))
+    // Utilitaires et Modération
+    new SlashCommandBuilder().setName('mp').setDescription('Envoyer un MP officiel.').addUserOption(opt => opt.setName('cible').setRequired(true)).addStringOption(opt => opt.setName('message').setRequired(true)),
+    new SlashCommandBuilder().setName('say').setDescription('Faire parler le bot.').setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages).addStringOption(opt => opt.setName('message').setRequired(true)),
+    new SlashCommandBuilder().setName('rename_user').setDescription('Changer le pseudo.').setDefaultMemberPermissions(PermissionFlagsBits.ManageNicknames).addUserOption(opt => opt.setName('cible').setRequired(true)).addStringOption(opt => opt.setName('pseudo').setRequired(true)),
+    new SlashCommandBuilder().setName('ban').setDescription('Bannir un membre.').setDefaultMemberPermissions(PermissionFlagsBits.BanMembers).addUserOption(opt => opt.setName('cible').setRequired(true)).addStringOption(opt => opt.setName('raison').setRequired(false)),
+    new SlashCommandBuilder().setName('kick').setDescription('Expulser un membre.').setDefaultMemberPermissions(PermissionFlagsBits.KickMembers).addUserOption(opt => opt.setName('cible').setRequired(true)).addStringOption(opt => opt.setName('raison').setRequired(false)),
+    new SlashCommandBuilder().setName('mute').setDescription('Mettre en sourdine.').setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers).addUserOption(opt => opt.setName('cible').setRequired(true)).addIntegerOption(opt => opt.setName('duree').setRequired(true)).addStringOption(opt => opt.setName('raison').setRequired(false))
 ];
 
 // --- 5. ARRIVÉE DU BOT SUR UN SERVEUR ---
 client.on('guildCreate', async (guild) => {
-    const refugeChannel = guild.channels.cache.find(
-        ch => ch.type === ChannelType.GuildText && (ch.name.toLowerCase().includes('n0mit-coresystems') || ch.name.toLowerCase().includes('n0mit'))
-    );
-
-    if (refugeChannel) {
-        const welcomeEmbed = new EmbedBuilder()
-            .setTitle('🏫 n0mit SchoolBot - Refuge Identifié')
-            .setDescription('Bot autonome de gestion d’établissement scolaire connecté avec succès.')
-            .addFields(
-                { name: 'Développeur', value: 'n0mit CoreSystems' },
-                { name: 'Configuration', value: 'Utilisez `/setup_logs` pour définir votre salon de modération.' }
-            )
-            .setColor(0x00FF7F)
-            .setTimestamp()
-            .setFooter({ text: 'Powered by n0mit CoreSystems • n0mit SchoolBot' });
-
-        await refugeChannel.send({ embeds: [welcomeEmbed] }).catch(() => {});
-    }
+    await checkRefugeChannel(guild);
     logCreator('NOUVEAU SERVEUR', client.user, `Rejoint : ${guild.name} (${guild.id})`, guild.name);
 });
 
-// --- 6. EXECUTION DES COMMANDES ---
+// --- 6. EXECUTION DES COMMANDES & INTERACTION BOUTON ---
 client.on('interactionCreate', async (interaction) => {
+
+    // --- GESTION DES BOUTONS INTERACTIFS ---
+    if (interaction.isButton()) {
+        const customId = interaction.customId;
+
+        if (customId.startsWith('get_codes_')) {
+            const codeId = customId.replace('get_codes_', '');
+            const codeData = db.pendingCodes[codeId];
+
+            if (!codeData) {
+                return interaction.reply({ content: '❌ Ces identifiants ont expiré ou ne sont plus disponibles.', ephemeral: true });
+            }
+
+            // Vérification que seul l'élève ciblé peut cliquer
+            if (interaction.user.id !== codeData.targetUserId) {
+                return interaction.reply({ content: '⛔ Ces codes de connexion sont personnels et ne vous sont pas destinés.', ephemeral: true });
+            }
+
+            // Envoi éphémère de l'embed
+            const codeEmbed = new EmbedBuilder()
+                .setTitle('🌐 CODES PERSONNELS')
+                .setDescription(`Voici vos accès sécurisés pour rejoindre la plateforme **${codeData.platform}** de l'établissement.\n*Ne partagez jamais ces informations.*`)
+                .setColor(0xFFC807)
+                .setAuthor({ name: `ID serveur : ${interaction.guild.id}` })
+                .addFields(
+                    { name: '👤 Identifiant', value: `\`${codeData.identifiant}\``, inline: true },
+                    { name: '🔒 Mot de passe provisoire', value: `\`${codeData.mdp}\``, inline: true },
+                    { name: '📌 Première connexion', value: 'Il vous sera demandé de modifier votre mot de passe dès votre première connexion.', inline: false }
+                )
+                .setFooter({ text: 'Service Informatique - n0mit SchoolBot • Powered by n0mit CoreSystems' })
+                .setTimestamp();
+
+            return interaction.reply({ embeds: [codeEmbed], ephemeral: true });
+        }
+    }
+
     if (!interaction.isChatInputCommand()) return;
 
-    const { commandName, options, guild, user, channel } = interaction;
+    const { commandName, options, guild, user, channel, member } = interaction;
 
     try {
         // --- /SETUP_LOGS ---
         if (commandName === 'setup_logs') {
             const targetChannel = options.getChannel('salon');
-            
             if (!db.configs[guild.id]) db.configs[guild.id] = {};
             db.configs[guild.id].logChannelId = targetChannel.id;
             saveDatabase();
 
             await interaction.reply({ content: `✅ Salon des logs configuré sur <#${targetChannel.id}> !`, ephemeral: true });
+            logCreator('SETUP_LOGS', user, `Salon : #${targetChannel.name}`, guild.name);
+        }
 
-            const logEmbed = new EmbedBuilder()
-                .setTitle('⚙️ Configuration Mise à Jour')
-                .setDescription(`Le salon <#${targetChannel.id}> est maintenant le salon officiel de modération/logs.`)
-                .setColor(0x3498DB)
+        // --- /SETUP_RETENUE ---
+        if (commandName === 'setup_retenue') {
+            const targetRole = options.getRole('rôle');
+            if (!db.configs[guild.id]) db.configs[guild.id] = {};
+            db.configs[guild.id].retenueRoleId = targetRole.id;
+            saveDatabase();
+
+            await interaction.reply({ content: `✅ Le rôle ${targetRole} est désormais autorisé à attribuer des retenues.`, ephemeral: true });
+            logCreator('SETUP_RETENUE', user, `Rôle autorisé : ${targetRole.name}`, guild.name);
+        }
+
+        // --- /RETENUE ---
+        if (commandName === 'retenue') {
+            const allowedRoleId = db.configs[guild.id]?.retenueRoleId;
+
+            // Vérification si le système est configuré
+            if (!allowedRoleId) {
+                return interaction.reply({ 
+                    content: '⚠️ **Configuration requise** : Un administrateur doit d’abord définir le rôle autorisé avec la commande `/setup_retenue`.', 
+                    ephemeral: true 
+                });
+            }
+
+            // Vérification des permissions
+            const hasRole = member.roles.cache.has(allowedRoleId);
+            const isAdmin = member.permissions.has(PermissionFlagsBits.Administrator);
+
+            if (!hasRole && !isAdmin) {
+                return interaction.reply({ content: '⛔ Vous n’avez pas l’autorisation d’attribuer des retenues.', ephemeral: true });
+            }
+
+            const eleve = options.getUser('élève');
+            const raison = options.getString('raison');
+            const dateHeure = options.getString('date_heure');
+            const lieu = options.getString('lieu');
+
+            const retenueEmbed = new EmbedBuilder()
+                .setTitle('⚠️ AVIS DE RETENUE ADMINISTRATIVE')
+                .setDescription(`Une retenue a été prononcée à l'encontre de ${eleve}.`)
+                .setColor(0xE74C3C)
+                .setThumbnail(eleve.displayAvatarURL())
+                .addFields(
+                    { name: '👤 Élève sanctionné', value: `${eleve.tag}`, inline: true },
+                    { name: '✍️ Demandeur', value: `${user.tag}`, inline: true },
+                    { name: '📍 Lieu', value: lieu, inline: true },
+                    { name: '⏰ Date & Horaire', value: dateHeure, inline: false },
+                    { name: '📋 Motif de la sanction', value: raison, inline: false }
+                )
                 .setTimestamp()
                 .setFooter({ text: 'Powered by n0mit CoreSystems • n0mit SchoolBot' });
 
-            await logGuildPublic(guild, logEmbed);
-            logCreator('SETUP_LOGS', user, `Salon de logs : #${targetChannel.name}`, guild.name);
+            await channel.send({ content: `${eleve}`, embeds: [retenueEmbed] });
+            await interaction.reply({ content: `✅ Retenue enregistrée pour **${eleve.tag}**.`, ephemeral: true });
+
+            // Notification MP à l'élève
+            await eleve.send({ content: `⚠️ **Avis de Retenue** : Vous êtes convoqué(e) en retenue le **${dateHeure}** en **${lieu}**. Motif: *${raison}*.` }).catch(() => {});
+
+            // Log public
+            await logGuildPublic(guild, retenueEmbed);
+            logCreator('RETENUE', user, `Élève: ${eleve.tag} | Raison: ${raison}`, guild.name);
+        }
+
+        // --- /SEND_CODES ---
+        if (commandName === 'send_codes') {
+            const targetUser = options.getUser('élève');
+            const idVal = options.getString('identifiant');
+            const mdpVal = options.getString('mot_de_passe');
+            const platform = options.getString('plateforme');
+            const mode = options.getString('mode');
+            const targetChannel = options.getChannel('salon') || channel;
+
+            const codeEmbed = new EmbedBuilder()
+                .setTitle('🌐 CODES PERSONNELS')
+                .setDescription(`Voici vos accès sécurisés pour rejoindre la plateforme **${platform}** de l'établissement.\n*Ne partagez jamais ces informations.*`)
+                .setColor(0xFFC807)
+                .setAuthor({ name: `ID serveur : ${guild.id}` })
+                .addFields(
+                    { name: '👤 Identifiant', value: `\`${idVal}\``, inline: true },
+                    { name: '🔒 Mot de passe provisoire', value: `\`${mdpVal}\``, inline: true },
+                    { name: '📌 Première connexion', value: 'Il vous sera demandé de modifier votre mot de passe dès votre première connexion.', inline: false }
+                )
+                .setFooter({ text: 'Service Informatique - n0mit SchoolBot • Powered by n0mit CoreSystems' })
+                .setTimestamp();
+
+            if (mode === 'mp') {
+                try {
+                    await targetUser.send({ embeds: [codeEmbed] });
+                    await interaction.reply({ content: `🔑 Identifiants envoyés en MP à **${targetUser.tag}**.`, ephemeral: true });
+                } catch (e) {
+                    await interaction.reply({ content: `❌ Impossible d'envoyer le MP à **${targetUser.tag}** (DMs fermés).`, ephemeral: true });
+                }
+            } else if (mode === 'bouton') {
+                const codeId = `${Date.now()}_${targetUser.id}`;
+                db.pendingCodes[codeId] = {
+                    targetUserId: targetUser.id,
+                    identifiant: idVal,
+                    mdp: mdpVal,
+                    platform: platform
+                };
+                saveDatabase();
+
+                const announceEmbed = new EmbedBuilder()
+                    .setTitle('🔑 Génération de vos identifiants de connexion')
+                    .setDescription(`Les accès de **${targetUser}** pour la plateforme **${platform}** sont disponibles.\nCliquez sur le bouton ci-dessous pour les afficher.`)
+                    .setColor(0xFFC807)
+                    .setFooter({ text: 'Service Informatique - n0mit SchoolBot • Powered by n0mit CoreSystems' });
+
+                const row = new ActionRowBuilder().addComponents(
+                    new ButtonBuilder()
+                        .setCustomId(`get_codes_${codeId}`)
+                        .setLabel('🔑 Recevoir mes identifiants')
+                        .setStyle(ButtonStyle.Primary)
+                );
+
+                await targetChannel.send({ embeds: [announceEmbed], components: [row] });
+                await interaction.reply({ content: `✅ Bouton d'accès généré dans <#${targetChannel.id}> pour **${targetUser.tag}**.`, ephemeral: true });
+            }
+
+            logCreator('SEND_CODES', user, `Cible: ${targetUser.tag} | Mode: ${mode} | Plateforme: ${platform}`, guild.name);
+        }
+
+        // --- /PRONOTE_INFO ---
+        if (commandName === 'pronote_info') {
+            const targetChannel = options.getChannel('salon');
+            const ip = options.getString('adresse_ip');
+            const port = options.getString('port_tcp');
+            const designation = options.getString('designation');
+            const lien = options.getString('lien_web');
+
+            const embed1 = new EmbedBuilder()
+                .setTitle('🟢 Connexion Directe au Serveur PRONOTE')
+                .setDescription('Voici les paramètres requis pour configurer votre client Pronote et vous connecter au réseau de l’établissement.')
+                .setColor(0x236FFA)
+                .setThumbnail('https://s2.qwant.com/thumbr/474x473/4/6/3213d7c6910a4d83794a578f5dbfc79a6c66d506a810d3a60b16035125855c/OIP.bz0moE7y9nTtgz14HbPfSQHaHZ.jpg?u=https%3A%2F%2Ftse.mm.bing.net%2Fth%2Fid%2FOIP.bz0moE7y9nTtgz14HbPfSQHaHZ%3Fr%3D0%26pid%3DApi&q=0&b=1&p=0&a=0')
+                .addFields(
+                    { name: '🖥️ Adresse de la machine (Nom ou IP)', value: `\`${ip}\``, inline: false },
+                    { name: '🔌 Port TCP', value: `\`${port}\``, inline: true },
+                    { name: '🏫 Désignation du serveur', value: `*${designation}*`, inline: true }
+                )
+                .setFooter({ text: 'n0mit SchoolBot • Administration Réseau • Powered by n0mit CoreSystems' });
+
+            const embed2 = new EmbedBuilder()
+                .setTitle('Lien du PRONOTE')
+                .setDescription(`Ce lien est à disposition de toutes personnes qui ont un rôle dans cet établissement :\n${lien}`)
+                .setColor(0x6CFB13);
+
+            await targetChannel.send({ embeds: [embed1, embed2] });
+            await interaction.reply({ content: `✅ Infos Pronote publiées dans <#${targetChannel.id}>.`, ephemeral: true });
+
+            logCreator('PRONOTE_INFO', user, `Publié dans #${targetChannel.name}`, guild.name);
         }
 
         // --- /CONVOCATION ---
@@ -254,7 +446,7 @@ client.on('interactionCreate', async (interaction) => {
             const convoEmbed = new EmbedBuilder()
                 .setTitle('📜 CONVOCATION OFFICIELLE DE L’ÉTABLISSEMENT')
                 .setDescription(`**Attention ${targetUser}**, vous êtes convoqué(e) administrativement.`)
-                .setColor(0xD35400) // Orange/Rouge administratif
+                .setColor(0xD35400)
                 .setThumbnail(targetUser.displayAvatarURL())
                 .addFields(
                     { name: '👤 Personne convoquée', value: `${targetUser.tag}`, inline: true },
@@ -267,9 +459,8 @@ client.on('interactionCreate', async (interaction) => {
                 .setFooter({ text: 'Powered by n0mit CoreSystems • n0mit SchoolBot' });
 
             await targetChannel.send({ content: `${targetUser}`, embeds: [convoEmbed] });
-            await interaction.reply({ content: `✅ Convocation transmise avec succès dans <#${targetChannel.id}>.`, ephemeral: true });
-
-            logCreator('CONVOCATION', user, `Convoqué: ${targetUser.tag} | Lieu: ${lieu} | Date: ${date}`, guild.name);
+            await interaction.reply({ content: `✅ Convocation envoyée dans <#${targetChannel.id}>.`, ephemeral: true });
+            logCreator('CONVOCATION', user, `Convoqué: ${targetUser.tag}`, guild.name);
         }
 
         // --- /ANNONCE_IMPORTANTE ---
@@ -281,14 +472,13 @@ client.on('interactionCreate', async (interaction) => {
             const annonceEmbed = new EmbedBuilder()
                 .setTitle(`📢 ANNONCE OFFICIELLE : ${titre}`)
                 .setDescription(message)
-                .setColor(0x9B59B6) // Violet Institutionnel
+                .setColor(0x9B59B6)
                 .setTimestamp()
                 .setFooter({ text: 'Powered by n0mit CoreSystems • n0mit SchoolBot' });
 
             await targetChannel.send({ embeds: [annonceEmbed] });
             await interaction.reply({ content: `✅ Annonce publiée dans <#${targetChannel.id}>.`, ephemeral: true });
-
-            logCreator('ANNONCE', user, `Titre: ${titre} | Dans #${targetChannel.name}`, guild.name);
+            logCreator('ANNONCE', user, `Titre: ${titre}`, guild.name);
         }
 
         // --- /BULLETIN_CHANGE ---
@@ -301,20 +491,7 @@ client.on('interactionCreate', async (interaction) => {
             saveDatabase();
 
             await interaction.reply({ content: `✅ Bulletin mis à jour pour **${targetUser.tag}**.`, ephemeral: true });
-
-            const logEmbed = new EmbedBuilder()
-                .setTitle('📝 Modification de Bulletin School RP')
-                .addFields(
-                    { name: 'Élève', value: `${targetUser.tag}`, inline: true },
-                    { name: 'Auteur', value: `${user.tag}`, inline: true },
-                    { name: 'Nouvelle Appréciation', value: appreciation, inline: false }
-                )
-                .setColor(0x2ECC71)
-                .setTimestamp()
-                .setFooter({ text: 'Powered by n0mit CoreSystems • n0mit SchoolBot' });
-
-            await logGuildPublic(guild, logEmbed);
-            logCreator('BULLETIN_CHANGE', user, `Élève: ${targetUser.tag} | Note/Appréciation: ${appreciation}`, guild.name);
+            logCreator('BULLETIN_CHANGE', user, `Élève: ${targetUser.tag}`, guild.name);
         }
 
         // --- /BULLETIN_VIEW ---
@@ -340,16 +517,14 @@ client.on('interactionCreate', async (interaction) => {
         // --- /INFO_SERVER ---
         if (commandName === 'info_server') {
             const owner = await guild.fetchOwner();
-
             const embed = new EmbedBuilder()
                 .setTitle(`🏫 Fiche d’Établissement : ${guild.name}`)
                 .setThumbnail(guild.iconURL({ dynamic: true }))
                 .setColor(0x1ABC9C)
                 .addFields(
-                    { name: '👑 Direction (Fondateur)', value: `${owner.user.tag}`, inline: true },
+                    { name: '👑 Direction', value: `${owner.user.tag}`, inline: true },
                     { name: '👥 Effectif total', value: `${guild.memberCount} membres`, inline: true },
-                    { name: '🆔 ID Établissement', value: `\`${guild.id}\``, inline: true },
-                    { name: '📅 Date de création', value: `<t:${Math.floor(guild.createdTimestamp / 1000)}:F>`, inline: false }
+                    { name: '🆔 ID Établissement', value: `\`${guild.id}\``, inline: true }
                 )
                 .setTimestamp()
                 .setFooter({ text: 'Powered by n0mit CoreSystems • n0mit SchoolBot' });
@@ -376,70 +551,34 @@ client.on('interactionCreate', async (interaction) => {
             try {
                 await target.send({ embeds: [embedMP] });
                 await interaction.reply({ content: `✅ Message privé envoyé à **${target.tag}**.`, ephemeral: true });
-
-                const guildLog = new EmbedBuilder()
-                    .setTitle('📩 Log : Envoi de MP')
-                    .addFields(
-                        { name: 'Auteur', value: `${user.tag}`, inline: true },
-                        { name: 'Destinataire', value: `${target.tag}`, inline: true }
-                    )
-                    .setColor(0x0099FF)
-                    .setTimestamp()
-                    .setFooter({ text: 'Powered by n0mit CoreSystems • n0mit SchoolBot' });
-                await logGuildPublic(guild, guildLog);
-
-                logCreator('COMMANDE /MP', user, `À: ${target.tag} (${target.id}) | Message: "${msg}"`, guild.name);
+                logCreator('COMMANDE /MP', user, `À: ${target.tag} | Message: "${msg}"`, guild.name);
             } catch (e) {
-                await interaction.reply({ content: `❌ Impossible d'envoyer le MP (DMs fermés).`, ephemeral: true });
+                await interaction.reply({ content: `❌ DMs fermés par l'utilisateur.`, ephemeral: true });
             }
         }
 
         // --- /SAY ---
         if (commandName === 'say') {
             const msg = options.getString('message');
-
             await channel.send({ content: msg });
             await interaction.reply({ content: '✅ Message publié.', ephemeral: true });
-
-            const guildLog = new EmbedBuilder()
-                .setTitle('📢 Log : Commande /say')
-                .addFields(
-                    { name: 'Auteur', value: `${user.tag}`, inline: true },
-                    { name: 'Salon', value: `<#${channel.id}>`, inline: true }
-                )
-                .setColor(0x2ECC71)
-                .setTimestamp()
-                .setFooter({ text: 'Powered by n0mit CoreSystems • n0mit SchoolBot' });
-            await logGuildPublic(guild, guildLog);
-
             logCreator('COMMANDE /SAY', user, `Dans #${channel.name} | Message: "${msg}"`, guild.name);
         }
 
         // --- /INFO_USER ---
         if (commandName === 'info_user') {
             const targetUser = options.getUser('cible') || user;
-            const member = await guild.members.fetch(targetUser.id).catch(() => null);
-
-            const roles = member 
-                ? member.roles.cache.filter(r => r.id !== guild.id).map(r => r.toString()).join(', ') || 'Aucun rôle'
-                : 'Hors du serveur';
+            const memberObj = await guild.members.fetch(targetUser.id).catch(() => null);
 
             const embed = new EmbedBuilder()
                 .setTitle(`👤 Profil : ${targetUser.username}`)
                 .setThumbnail(targetUser.displayAvatarURL())
-                .setColor(member ? member.displayColor : 0x7289DA)
+                .setColor(memberObj ? memberObj.displayColor : 0x7289DA)
                 .addFields(
                     { name: 'Tag & ID', value: `${targetUser.tag}\n(\`${targetUser.id}\`)`, inline: true },
                     { name: 'Création du compte', value: `<t:${Math.floor(targetUser.createdTimestamp / 1000)}:R>`, inline: true }
                 )
                 .setFooter({ text: 'Powered by n0mit CoreSystems • n0mit SchoolBot' });
-
-            if (member) {
-                embed.addFields(
-                    { name: 'Arrivée sur le serveur', value: `<t:${Math.floor(member.joinedTimestamp / 1000)}:R>`, inline: false },
-                    { name: 'Rôles', value: roles, inline: false }
-                );
-            }
 
             await interaction.reply({ embeds: [embed] });
         }
@@ -448,25 +587,11 @@ client.on('interactionCreate', async (interaction) => {
         if (commandName === 'rename_user') {
             const targetMember = options.getMember('cible');
             const newName = options.getString('pseudo');
-
             if (!targetMember) return interaction.reply({ content: 'Membre introuvable.', ephemeral: true });
 
             const oldName = targetMember.displayName;
             await targetMember.setNickname(newName);
             await interaction.reply({ content: `✅ Pseudo de **${oldName}** renommé en **${newName}**.` });
-
-            const guildLog = new EmbedBuilder()
-                .setTitle('✏️ Log : Pseudo Modifié')
-                .addFields(
-                    { name: 'Modérateur', value: `${user.tag}`, inline: true },
-                    { name: 'Membre', value: `${targetMember.user.tag}`, inline: true },
-                    { name: 'Changement', value: `${oldName} ➔ ${newName}` }
-                )
-                .setColor(0xF1C40F)
-                .setTimestamp()
-                .setFooter({ text: 'Powered by n0mit CoreSystems • n0mit SchoolBot' });
-            await logGuildPublic(guild, guildLog);
-
             logCreator('MODERATION (RENAME)', user, `Target: ${targetMember.user.tag} | ${oldName} -> ${newName}`, guild.name);
         }
 
@@ -474,22 +599,8 @@ client.on('interactionCreate', async (interaction) => {
         if (commandName === 'ban') {
             const targetUser = options.getUser('cible');
             const reason = options.getString('raison') || 'Aucune raison';
-
             await guild.members.ban(targetUser, { reason });
-            await interaction.reply({ content: `🚫 **${targetUser.tag}** banni. Raison: ${reason}` });
-
-            const guildLog = new EmbedBuilder()
-                .setTitle('🚫 Log : Bannissement')
-                .addFields(
-                    { name: 'Modérateur', value: `${user.tag}`, inline: true },
-                    { name: 'Membre Banni', value: `${targetUser.tag}`, inline: true },
-                    { name: 'Raison', value: reason }
-                )
-                .setColor(0xE74C3C)
-                .setTimestamp()
-                .setFooter({ text: 'Powered by n0mit CoreSystems • n0mit SchoolBot' });
-            await logGuildPublic(guild, guildLog);
-
+            await interaction.reply({ content: `🚫 **${targetUser.tag}** banni.` });
             logCreator('MODERATION (BAN)', user, `Target: ${targetUser.tag} | Raison: ${reason}`, guild.name);
         }
 
@@ -497,24 +608,9 @@ client.on('interactionCreate', async (interaction) => {
         if (commandName === 'kick') {
             const targetMember = options.getMember('cible');
             const reason = options.getString('raison') || 'Aucune raison';
-
             if (!targetMember) return interaction.reply({ content: 'Membre introuvable.', ephemeral: true });
-
             await targetMember.kick(reason);
-            await interaction.reply({ content: `👢 **${targetMember.user.tag}** expulsé. Raison: ${reason}` });
-
-            const guildLog = new EmbedBuilder()
-                .setTitle('👢 Log : Expulsion')
-                .addFields(
-                    { name: 'Modérateur', value: `${user.tag}`, inline: true },
-                    { name: 'Membre Expulsé', value: `${targetMember.user.tag}`, inline: true },
-                    { name: 'Raison', value: reason }
-                )
-                .setColor(0xE67E22)
-                .setTimestamp()
-                .setFooter({ text: 'Powered by n0mit CoreSystems • n0mit SchoolBot' });
-            await logGuildPublic(guild, guildLog);
-
+            await interaction.reply({ content: `👢 **${targetMember.user.tag}** expulsé.` });
             logCreator('MODERATION (KICK)', user, `Target: ${targetMember.user.tag} | Raison: ${reason}`, guild.name);
         }
 
@@ -523,26 +619,10 @@ client.on('interactionCreate', async (interaction) => {
             const targetMember = options.getMember('cible');
             const minutes = options.getInteger('duree');
             const reason = options.getString('raison') || 'Aucune raison';
-
             if (!targetMember) return interaction.reply({ content: 'Membre introuvable.', ephemeral: true });
-
             await targetMember.timeout(minutes * 60 * 1000, reason);
-            await interaction.reply({ content: `🔇 **${targetMember.user.tag}** en sourdine pour ${minutes} min. Raison: ${reason}` });
-
-            const guildLog = new EmbedBuilder()
-                .setTitle('🔇 Log : Sourdine (Mute)')
-                .addFields(
-                    { name: 'Modérateur', value: `${user.tag}`, inline: true },
-                    { name: 'Membre', value: `${targetMember.user.tag}`, inline: true },
-                    { name: 'Durée', value: `${minutes} minutes`, inline: true },
-                    { name: 'Raison', value: reason }
-                )
-                .setColor(0x95A5A6)
-                .setTimestamp()
-                .setFooter({ text: 'Powered by n0mit CoreSystems • n0mit SchoolBot' });
-            await logGuildPublic(guild, guildLog);
-
-            logCreator('MODERATION (MUTE)', user, `Target: ${targetMember.user.tag} | Durée: ${minutes}m | Raison: ${reason}`, guild.name);
+            await interaction.reply({ content: `🔇 **${targetMember.user.tag}** en sourdine pour ${minutes} min.` });
+            logCreator('MODERATION (MUTE)', user, `Target: ${targetMember.user.tag} | Durée: ${minutes}m`, guild.name);
         }
 
     } catch (err) {
@@ -551,20 +631,24 @@ client.on('interactionCreate', async (interaction) => {
     }
 });
 
-// --- 7. CONNEXION ---
+// --- 7. CONNEXION DU BOT ET DEPLOIEMENT ---
 client.once('ready', async () => {
     console.log(`🤖 n0mit SchoolBot connecté en tant que ${client.user.tag}`);
 
+    // Déploiement des commandes Slash
     const rest = new REST({ version: '10' }).setToken(TOKEN);
     try {
         await rest.put(
             Routes.applicationCommands(CLIENT_ID),
             { body: commandsData }
         );
-        console.log('✅ Nouvelles commandes Slash synchronisées sur Discord.');
+        console.log('✅ Synchronisation complète des commandes Slash sur Discord.');
     } catch (err) {
-        console.error('Erreur de déploiement des commandes :', err);
+        console.error('Erreur de déploiement :', err);
     }
+
+    // Vérification des refuges sur tous les serveurs existants
+    client.guilds.cache.forEach(guild => checkRefugeChannel(guild));
 });
 
 client.login(TOKEN);
