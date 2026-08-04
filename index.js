@@ -16,6 +16,18 @@ const express = require('express');
 const fs = require('fs');
 const path = require('path');
 
+// --- 0. CONSTANTES ET GESTION L'OWNER BOT ---
+const OWNER_ID = process.env.OWNER_ID || "VOTRE_ID_DISCORD_ICI"; // L'owner a TOUS les droits absolus
+
+// Helper pour vérifier si un membre est Admin ou Owner du bot
+function checkAdminOrOwner(member, userId) {
+    if (userId === OWNER_ID) return true;
+    if (member && member.permissions) {
+        return member.permissions.has(PermissionFlagsBits.Administrator);
+    }
+    return false;
+}
+
 // --- 1. SERVEUR KEEP-ALIVE ET PAGE STATUS POUR RENDER WEB SERVICE ---
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -81,7 +93,7 @@ app.listen(PORT, () => {
 const DB_FILE = path.join(__dirname, 'database.json');
 
 let db = {
-    configs: {},         // guildId: { logChannelId: "...", retenueRoleId: "...", refugeWelcomeSent: true }
+    configs: {},         // guildId: { logChannelId: "...", retenueRoleId: "...", refugeWelcomeSent: true, customEdt: "..." }
     bulletins: {},       // guildId: { userId: "Appréciation..." }
     pendingCodes: {},    // codeId: { targetUserId: "...", identifiant: "...", mdp: "...", platform: "..." }
     restrictedUsers: {}  // userId: { reason: "...", restrictedAt: "ISO Date" }
@@ -151,7 +163,7 @@ async function logGuildPublic(guild, embed) {
     }
 }
 
-// Gestion du Salon Refuge (MODIFIÉ POUR ÉVITER LES SPAMS DE BIENVENUE)
+// Gestion du Salon Refuge
 async function checkRefugeChannel(guild, isNewJoin = false) {
     try {
         if (!db.configs[guild.id]) db.configs[guild.id] = {};
@@ -170,7 +182,6 @@ async function checkRefugeChannel(guild, isNewJoin = false) {
             console.log(`🛠️ Salon refuge créé sur : ${guild.name}`);
         }
 
-        // Le message est envoyé STRICTEMENT lorsqu'il s'agit d'un véritable ajout du bot (guildCreate)
         if (isNewJoin) {
             const welcomeEmbed = new EmbedBuilder()
                 .setTitle('🏫 n0mit SchoolBot - Bienvenue !')
@@ -179,7 +190,7 @@ async function checkRefugeChannel(guild, isNewJoin = false) {
                     { name: 'Développeur', value: 'n0mit CoreSystems' },
                     { name: 'Salon Refuge', value: `<#${refugeChannel.id}>` },
                     { name: 'Support / Serveur', value: '[Rejoindre Discord](https://discord.gg/44erEhr8V2)' },
-                    { name: 'Premières commandes', value: '• `/setup_logs` pour configurer le salon des logs.\n• `/setup_retenue` pour définir le rôle de gestion des retenues.\n• `/help` pour afficher toutes les commandes.' }
+                    { name: 'Premières commandes', value: '• `/setup_logs` pour configurer le salon des logs.\n• `/setup_retenue` pour définir le rôle de gestion des retenues.\n• `/setup_edt` pour personnaliser l\'emploi du temps.\n• `/help` pour afficher toutes les commandes.' }
                 )
                 .setColor(0x00FF7F)
                 .setTimestamp()
@@ -214,6 +225,24 @@ const commandsData = [
         .addRoleOption(opt => opt.setName('rôle').setDescription('Rôle autorisé (ex: Professeurs, Staff)').setRequired(true)),
 
     new SlashCommandBuilder()
+        .setName('setup_edt')
+        .setDescription('Personnaliser le texte de l’emploi du temps du serveur.')
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+        .addStringOption(opt => opt.setName('contenu').setDescription('Le texte ou planning personnalisé à afficher').setRequired(true)),
+
+    new SlashCommandBuilder()
+        .setName('create_embed')
+        .setDescription('Créer et envoyer un Embed personnalisé dans un salon.')
+        .setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages)
+        .addChannelOption(opt => opt.setName('salon').setDescription('Salon de destination').addChannelTypes(ChannelType.GuildText).setRequired(true))
+        .addStringOption(opt => opt.setName('titre').setDescription('Titre de l\'embed').setRequired(true))
+        .addStringOption(opt => opt.setName('description').setDescription('Contenu / texte de l\'embed').setRequired(true))
+        .addStringOption(opt => opt.setName('couleur').setDescription('Code Couleur HEX (ex: #3498db ou Rouge)').setRequired(false))
+        .addStringOption(opt => opt.setName('image').setDescription('Lien URL d\'une grande image').setRequired(false))
+        .addStringOption(opt => opt.setName('thumbnail').setDescription('Lien URL d\'une miniature (en haut à droite)').setRequired(false))
+        .addStringOption(opt => opt.setName('footer').setDescription('Texte de bas de page').setRequired(false)),
+
+    new SlashCommandBuilder()
         .setName('restreindre')
         .setDescription('Restreindre un utilisateur globalement (Staff Bot uniquement).')
         .addUserOption(opt => opt.setName('cible').setDescription('L’utilisateur à restreindre').setRequired(true))
@@ -235,7 +264,7 @@ const commandsData = [
 
     new SlashCommandBuilder()
         .setName('emploi_du_temps')
-        .setDescription('Afficher la grille indicative des cours de l’établissement.'),
+        .setDescription('Afficher la grille des cours de l’établissement.'),
 
     new SlashCommandBuilder()
         .setName('retenue')
@@ -420,9 +449,11 @@ client.on('interactionCreate', async (interaction) => {
 
     const { commandName, options, guild, user, channel, member } = interaction;
 
-    // --- VÉRIFICATION DE RESTRICTION ---
-    const restrictedActions = ['mp', 'say', 'retenue', 'convocation', 'absence', 'send_codes', 'bulletin_change', 'annonce_importante', 'sondage', 'avertissement'];
-    if (db.restrictedUsers[user.id] && restrictedActions.includes(commandName)) {
+    // --- VÉRIFICATION DE RESTRICTION (Sauf si c'est l'Owner du Bot) ---
+    const isOwner = (user.id === OWNER_ID);
+    const restrictedActions = ['mp', 'say', 'retenue', 'convocation', 'absence', 'send_codes', 'bulletin_change', 'annonce_importante', 'sondage', 'avertissement', 'create_embed'];
+    
+    if (!isOwner && db.restrictedUsers[user.id] && restrictedActions.includes(commandName)) {
         const restriction = db.restrictedUsers[user.id];
         return interaction.reply({
             content: `🚫 **Accès refusé** : Votre compte a été restreint par l'équipe n0mit CoreSystems.\n*Motif : ${restriction.reason}*`,
@@ -433,7 +464,7 @@ client.on('interactionCreate', async (interaction) => {
     try {
         if (commandName === 'restreindre') {
             const key = options.getString('cle_secrete');
-            if (key !== STAFF_KEY) {
+            if (key !== STAFF_KEY && !isOwner) {
                 return interaction.reply({ content: '⛔ Clé secrète invalide.', ephemeral: true });
             }
 
@@ -452,7 +483,7 @@ client.on('interactionCreate', async (interaction) => {
 
         if (commandName === 'debloquer') {
             const key = options.getString('cle_secrete');
-            if (key !== STAFF_KEY) {
+            if (key !== STAFF_KEY && !isOwner) {
                 return interaction.reply({ content: '⛔ Clé secrète invalide.', ephemeral: true });
             }
 
@@ -474,10 +505,10 @@ client.on('interactionCreate', async (interaction) => {
                 .setDescription('Système complet d’administration et de gestion scolaire RP.')
                 .setColor(0x3498DB)
                 .addFields(
-                    { name: '⚙️ Configuration', value: '`/setup_logs` • `/setup_retenue`', inline: false },
+                    { name: '⚙️ Configuration', value: '`/setup_logs` • `/setup_retenue` • `/setup_edt`', inline: false },
                     { name: '📜 Vie Scolaire RP', value: '`/convocation` • `/retenue` • `/absence` • `/avertissement` • `/emploi_du_temps` • `/sondage` • `/annonce_importante` • `/bulletin_change` • `/bulletin_view`', inline: false },
                     { name: '🔑 Accès & Pronote', value: '`/send_codes` • `/pronote_info`', inline: false },
-                    { name: '🛡️ Modération', value: '`/clear` • `/rename_user` • `/mute` • `/kick` • `/ban` • `/mp` • `/say`', inline: false },
+                    { name: '🛡️ Modération & Création', value: '`/create_embed` • `/clear` • `/rename_user` • `/mute` • `/kick` • `/ban` • `/mp` • `/say`', inline: false },
                     { name: 'ℹ️ Informations', value: '`/info_server` • `/info_user` • `/help`', inline: false },
                     { name: '🌐 Communauté & Support', value: '[Rejoindre Discord n0mit CoreSystems](https://discord.gg/44erEhr8V2)', inline: false }
                 )
@@ -511,22 +542,81 @@ client.on('interactionCreate', async (interaction) => {
             logCreator('AVERTISSEMENT', user, `Élève: ${eleve.tag} | Motif: ${motif}`, guild.name);
         }
 
+        // --- OPTION PAR DÉFAUT / PERSONNALISÉE : EMPLOI DU TEMPS ---
+        if (commandName === 'setup_edt') {
+            if (!checkAdminOrOwner(member, user.id)) {
+                return interaction.reply({ content: '⛔ Vous devez être administrateur pour configurer l\'emploi du temps.', ephemeral: true });
+            }
+
+            const contenu = options.getString('contenu');
+            if (!db.configs[guild.id]) db.configs[guild.id] = {};
+            db.configs[guild.id].customEdt = contenu;
+            saveDatabase();
+
+            await interaction.reply({ content: `✅ L'emploi du temps personnalisé de l'établissement a été mis à jour !`, ephemeral: true });
+            logCreator('SETUP_EDT', user, `Contenu mis à jour pour ${guild.name}`, guild.name);
+        }
+
         if (commandName === 'emploi_du_temps') {
+            const customEdt = db.configs[guild.id]?.customEdt;
+
             const edtEmbed = new EmbedBuilder()
                 .setTitle(`📅 Emploi du Temps Général - ${guild.name}`)
-                .setDescription('Horaires généraux des cours de l’établissement :')
                 .setColor(0x9B59B6)
-                .addFields(
-                    { name: '🌅 Matinée', value: '• **08h00 - 09h55** : Cours M1/M2\n• **10h10 - 12h05** : Cours M3/M4', inline: false },
-                    { name: '☀️ Pause Déjeuner', value: '• **12h05 - 13h30** : Restauration scolaire & Activités', inline: false },
-                    { name: '🌆 Après-Midi', value: '• **13h30 - 15h25** : Cours S1/S2\n• **15h40 - 17h35** : Cours S3/S4', inline: false }
-                )
-                .setFooter({ text: 'Administration Scolaire • Powered by n0mit CoreSystems' });
+                .setFooter({ text: 'Administration Scolaire • Powered by n0mit CoreSystems' })
+                .setTimestamp();
+
+            if (customEdt) {
+                edtEmbed.setDescription(customEdt);
+            } else {
+                edtEmbed.setDescription('Horaires généraux des cours de l’établissement :')
+                    .addFields(
+                        { name: '🌅 Matinée', value: '• **08h00 - 09h55** : Cours M1/M2\n• **10h10 - 12h05** : Cours M3/M4', inline: false },
+                        { name: '☀️ Pause Déjeuner', value: '• **12h05 - 13h30** : Restauration scolaire & Activités', inline: false },
+                        { name: '🌆 Après-Midi', value: '• **13h30 - 15h25** : Cours S1/S2\n• **15h40 - 17h35** : Cours S3/S4', inline: false }
+                    );
+            }
 
             return interaction.reply({ embeds: [edtEmbed] });
         }
 
+        // --- CRÉATION EMBED PERSONNALISÉ POUR MODÉRATEURS / ADMINS / OWNER ---
+        if (commandName === 'create_embed') {
+            const targetChannel = options.getChannel('salon');
+            const titre = options.getString('titre');
+            const desc = options.getString('description');
+            const colorInput = options.getString('couleur');
+            const imageUrl = options.getString('image');
+            const thumbnailUrl = options.getString('thumbnail');
+            const footerText = options.getString('footer');
+
+            const embed = new EmbedBuilder()
+                .setTitle(titre)
+                .setDescription(desc);
+
+            if (colorInput) {
+                try {
+                    embed.setColor(colorInput.startsWith('#') ? colorInput : `#${colorInput}`);
+                } catch {
+                    embed.setColor(0x3498DB);
+                }
+            } else {
+                embed.setColor(0x3498DB);
+            }
+
+            if (imageUrl) embed.setImage(imageUrl);
+            if (thumbnailUrl) embed.setThumbnail(thumbnailUrl);
+            if (footerText) embed.setFooter({ text: footerText });
+
+            await targetChannel.send({ embeds: [embed] });
+            await interaction.reply({ content: `✅ Embed personnalisé publié avec succès dans <#${targetChannel.id}> !`, ephemeral: true });
+            logCreator('CREATE_EMBED', user, `Titre: "${titre}" dans #${targetChannel.name}`, guild.name);
+        }
+
         if (commandName === 'setup_logs') {
+            if (!checkAdminOrOwner(member, user.id)) {
+                return interaction.reply({ content: '⛔ Vous devez être administrateur pour utiliser cette commande.', ephemeral: true });
+            }
             const targetChannel = options.getChannel('salon');
             if (!db.configs[guild.id]) db.configs[guild.id] = {};
             db.configs[guild.id].logChannelId = targetChannel.id;
@@ -537,6 +627,9 @@ client.on('interactionCreate', async (interaction) => {
         }
 
         if (commandName === 'setup_retenue') {
+            if (!checkAdminOrOwner(member, user.id)) {
+                return interaction.reply({ content: '⛔ Vous devez être administrateur pour utiliser cette commande.', ephemeral: true });
+            }
             const targetRole = options.getRole('rôle');
             if (!db.configs[guild.id]) db.configs[guild.id] = {};
             db.configs[guild.id].retenueRoleId = targetRole.id;
@@ -548,15 +641,14 @@ client.on('interactionCreate', async (interaction) => {
 
         if (commandName === 'retenue') {
             const allowedRoleId = db.configs[guild.id]?.retenueRoleId;
+            const hasRole = allowedRoleId ? member.roles.cache.has(allowedRoleId) : false;
+            const isAdminOrOwner = checkAdminOrOwner(member, user.id);
 
-            if (!allowedRoleId) {
+            if (!allowedRoleId && !isAdminOrOwner) {
                 return interaction.reply({ content: '⚠️ **Configuration requise** : Un administrateur doit d’abord exécuter `/setup_retenue`.', ephemeral: true });
             }
 
-            const hasRole = member.roles.cache.has(allowedRoleId);
-            const isAdmin = member.permissions.has(PermissionFlagsBits.Administrator);
-
-            if (!hasRole && !isAdmin) {
+            if (!hasRole && !isAdminOrOwner) {
                 return interaction.reply({ content: '⛔ Vous n’avez pas le rôle requis pour appliquer des retenues.', ephemeral: true });
             }
 
@@ -820,25 +912,33 @@ client.on('interactionCreate', async (interaction) => {
             await interaction.reply({ embeds: [embed] });
         }
 
+        // --- OPTION PERSONNALISÉE : CONDITION MP (OFFICIEL SI ADMIN/OWNER) ---
         if (commandName === 'mp') {
             const target = options.getUser('cible');
             const msg = options.getString('message');
 
+            const isAdminOrOwner = checkAdminOrOwner(member, user.id);
+
+            const footerText = isAdminOrOwner 
+                ? '📌 Message Officiel de la Direction / Administration.' 
+                : 'Ce message n\'a pas de valeur administrative officielle.';
+
             const embedMP = new EmbedBuilder()
                 .setTitle(`💬 Message reçu via n0mit SchoolBot`)
                 .setDescription(msg)
-                .setColor(0x3498DB)
+                .setColor(isAdminOrOwner ? 0x2ECC71 : 0x3498DB)
                 .addFields(
                     { name: '👤 Expéditeur', value: `${user.tag} (\`${user.id}\`)`, inline: true },
-                    { name: '🏰 Serveur d\'origine', value: `${guild.name}`, inline: true }
+                    { name: '🏰 Serveur d\'origine', value: `${guild.name}`, inline: true },
+                    { name: '📜 Statut', value: isAdminOrOwner ? '✅ **OFFICIEL**' : 'ℹ️ **NON-OFFICIEL**', inline: true }
                 )
                 .setTimestamp()
-                .setFooter({ text: 'Ce message n\'a pas de valeur administrative officielle.' });
+                .setFooter({ text: footerText });
 
             try {
                 await target.send({ embeds: [embedMP] });
-                await interaction.reply({ content: `💬 Message transmis en privé à **${target.tag}**.`, ephemeral: true });
-                logCreator('COMMANDE /MP', user, `À: ${target.tag} | Message: "${msg}"`, guild.name);
+                await interaction.reply({ content: `💬 Message transmis en privé à **${target.tag}** (${isAdminOrOwner ? 'Statut: Officiel' : 'Statut: Non-officiel'}).`, ephemeral: true });
+                logCreator('COMMANDE /MP', user, `À: ${target.tag} | Message: "${msg}" | Officiel: ${isAdminOrOwner}`, guild.name);
             } catch (e) {
                 await interaction.reply({ content: `❌ Impossible d’envoyer le MP (DMs fermés).`, ephemeral: true });
             }
@@ -940,7 +1040,6 @@ client.once('ready', async () => {
         console.error('Erreur de déploiement des commandes :', err);
     }
 
-    // Vérifie et crée les salons refuge si manquants SANS envoyer de message de bienvenue
     client.guilds.cache.forEach(guild => checkRefugeChannel(guild, false));
 });
 
