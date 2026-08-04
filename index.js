@@ -16,12 +16,61 @@ const express = require('express');
 const fs = require('fs');
 const path = require('path');
 
-// --- 1. SERVEUR KEEP-ALIVE POUR RENDER WEB SERVICE ---
+// --- 1. SERVEUR KEEP-ALIVE ET PAGE STATUS POUR RENDER WEB SERVICE ---
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.get('/', (req, res) => {
-    res.send('🤖 n0mit SchoolBot est en ligne et opérationnel !');
+    const uptimeSeconds = Math.floor(process.uptime());
+    const hours = Math.floor(uptimeSeconds / 3600);
+    const minutes = Math.floor((uptimeSeconds % 3600) / 60);
+    const seconds = uptimeSeconds % 60;
+    
+    const botStatus = client.user ? '🟢 En Ligne' : '🔴 Connexion en cours...';
+    const serverCount = client.guilds ? client.guilds.cache.size : 0;
+    const userCount = client.guilds ? client.guilds.cache.reduce((acc, g) => acc + g.memberCount, 0) : 0;
+
+    res.send(`
+        <!DOCTYPE html>
+        <html lang="fr">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Status - n0mit SchoolBot</title>
+            <style>
+                body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #0f172a; color: #f8fafc; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
+                .card { background-color: #1e293b; border-radius: 12px; padding: 32px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); border: 1px solid #334155; text-align: center; max-width: 400px; width: 100%; }
+                h1 { color: #38bdf8; font-size: 24px; margin-bottom: 8px; }
+                .status { display: inline-block; padding: 6px 12px; border-radius: 20px; background-color: #064e3b; color: #34d399; font-weight: bold; margin-bottom: 20px; }
+                .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 16px; }
+                .stat-box { background-color: #0f172a; padding: 12px; border-radius: 8px; border: 1px solid #1e293b; }
+                .stat-title { font-size: 12px; color: #94a3b8; text-transform: uppercase; }
+                .stat-value { font-size: 18px; font-weight: bold; color: #f1f5f9; margin-top: 4px; }
+            </style>
+        </head>
+        <body>
+            <div class="card">
+                <h1>🤖 n0mit SchoolBot</h1>
+                <div class="status">${botStatus}</div>
+                <p style="color: #94a3b8; font-size: 14px;">Système de gestion scolaire opérationnel</p>
+                <div class="stat-grid">
+                    <div class="stat-box">
+                        <div class="stat-title">Serveurs</div>
+                        <div class="stat-value">${serverCount}</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-title">Utilisateurs</div>
+                        <div class="stat-value">${userCount}</div>
+                    </div>
+                </div>
+                <div class="stat-box" style="margin-top: 12px;">
+                    <div class="stat-title">Temps d'activité</div>
+                    <div class="stat-value">${hours}h ${minutes}m ${seconds}s</div>
+                </div>
+            </div>
+        </body>
+        </html>
+    `);
 });
 
 app.listen(PORT, () => {
@@ -73,7 +122,7 @@ const client = new Client({
 
 const TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
-const STAFF_KEY = process.env.BOT_STAFF_KEY || "ADMIN_SECRET_KEY"; // Définir la clé dans les variables Render
+const STAFF_KEY = process.env.BOT_STAFF_KEY || "ADMIN_SECRET_KEY";
 
 // Console Log Créateur
 function logCreator(type, author, detail, guild = 'N/A') {
@@ -102,7 +151,7 @@ async function logGuildPublic(guild, embed) {
     }
 }
 
-// Gestion du Salon Refuge
+// Gestion du Salon Refuge (MODIFIÉ POUR ÉVITER LES SPAMS DE BIENVENUE)
 async function checkRefugeChannel(guild, isNewJoin = false) {
     try {
         if (!db.configs[guild.id]) db.configs[guild.id] = {};
@@ -121,7 +170,8 @@ async function checkRefugeChannel(guild, isNewJoin = false) {
             console.log(`🛠️ Salon refuge créé sur : ${guild.name}`);
         }
 
-        if (isNewJoin || !db.configs[guild.id].refugeWelcomeSent) {
+        // Le message est envoyé STRICTEMENT lorsqu'il s'agit d'un véritable ajout du bot (guildCreate)
+        if (isNewJoin) {
             const welcomeEmbed = new EmbedBuilder()
                 .setTitle('🏫 n0mit SchoolBot - Bienvenue !')
                 .setDescription('Merci d\'avoir ajouté **n0mit SchoolBot** à votre serveur ! Le système autonome de gestion scolaire est prêt à l\'emploi.')
@@ -147,12 +197,10 @@ async function checkRefugeChannel(guild, isNewJoin = false) {
 
 // --- 4. DÉFINITION DES COMMANDES SLASH ---
 const commandsData = [
-    // Help
     new SlashCommandBuilder()
         .setName('help')
         .setDescription('Affiche le manuel complet des commandes du bot.'),
 
-    // Configuration
     new SlashCommandBuilder()
         .setName('setup_logs')
         .setDescription('Définir le salon des logs de modération et de vie scolaire.')
@@ -165,7 +213,6 @@ const commandsData = [
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
         .addRoleOption(opt => opt.setName('rôle').setDescription('Rôle autorisé (ex: Professeurs, Staff)').setRequired(true)),
 
-    // Système de Restriction (Staff Bot)
     new SlashCommandBuilder()
         .setName('restreindre')
         .setDescription('Restreindre un utilisateur globalement (Staff Bot uniquement).')
@@ -179,7 +226,6 @@ const commandsData = [
         .addUserOption(opt => opt.setName('cible').setDescription('L’utilisateur à débannir du bot').setRequired(true))
         .addStringOption(opt => opt.setName('cle_secrete').setDescription('Clé secrète du Staff').setRequired(true)),
 
-    // Vie Scolaire & RP
     new SlashCommandBuilder()
         .setName('avertissement')
         .setDescription('Donner un avertissement disciplinaire RP à un élève.')
@@ -266,7 +312,6 @@ const commandsData = [
         .addStringOption(opt => opt.setName('designation').setDescription('Nom de l’établissement / Serveur').setRequired(true))
         .addStringOption(opt => opt.setName('lien_web').setDescription('Lien accès Web PRONOTE').setRequired(true)),
 
-    // Bulletins RP
     new SlashCommandBuilder()
         .setName('bulletin_change')
         .setDescription('Modifier l’appréciation générale d’un élève.')
@@ -279,7 +324,6 @@ const commandsData = [
         .setDescription('Consulter le bulletin RP d’un élève.')
         .addUserOption(opt => opt.setName('élève').setDescription('L’élève ciblé (laisser vide pour soi)').setRequired(false)),
 
-    // Infos & Utilitaires
     new SlashCommandBuilder().setName('info_server').setDescription('Informations sur l’établissement actuel.'),
     new SlashCommandBuilder().setName('info_user').setDescription('Informations détaillées sur un utilisateur.').addUserOption(opt => opt.setName('cible').setDescription('Utilisateur').setRequired(false)),
 
@@ -377,7 +421,6 @@ client.on('interactionCreate', async (interaction) => {
     const { commandName, options, guild, user, channel, member } = interaction;
 
     // --- VÉRIFICATION DE RESTRICTION ---
-    // Si l'utilisateur est restreint et essaie une commande interactive/administrative
     const restrictedActions = ['mp', 'say', 'retenue', 'convocation', 'absence', 'send_codes', 'bulletin_change', 'annonce_importante', 'sondage', 'avertissement'];
     if (db.restrictedUsers[user.id] && restrictedActions.includes(commandName)) {
         const restriction = db.restrictedUsers[user.id];
@@ -388,7 +431,6 @@ client.on('interactionCreate', async (interaction) => {
     }
 
     try {
-        // --- /RESTREINDRE (STAFF BOT) ---
         if (commandName === 'restreindre') {
             const key = options.getString('cle_secrete');
             if (key !== STAFF_KEY) {
@@ -408,7 +450,6 @@ client.on('interactionCreate', async (interaction) => {
             logCreator('RESTRICTION_BOT', user, `Utilisateur restreint : ${target.tag} | Motif : ${reason}`, guild?.name || 'DM');
         }
 
-        // --- /DEBLOQUER (STAFF BOT) ---
         if (commandName === 'debloquer') {
             const key = options.getString('cle_secrete');
             if (key !== STAFF_KEY) {
@@ -427,7 +468,6 @@ client.on('interactionCreate', async (interaction) => {
             logCreator('RESTRICTION_LIFTED', user, `Restriction levée pour : ${target.tag}`, guild?.name || 'DM');
         }
 
-        // --- /HELP ---
         if (commandName === 'help') {
             const helpEmbed = new EmbedBuilder()
                 .setTitle('📚 Manuel des Commandes - n0mit SchoolBot')
@@ -447,7 +487,6 @@ client.on('interactionCreate', async (interaction) => {
             return interaction.reply({ embeds: [helpEmbed] });
         }
 
-        // --- /AVERTISSEMENT ---
         if (commandName === 'avertissement') {
             const eleve = options.getUser('élève');
             const motif = options.getString('motif');
@@ -472,7 +511,6 @@ client.on('interactionCreate', async (interaction) => {
             logCreator('AVERTISSEMENT', user, `Élève: ${eleve.tag} | Motif: ${motif}`, guild.name);
         }
 
-        // --- /EMPLOI_DU_TEMPS ---
         if (commandName === 'emploi_du_temps') {
             const edtEmbed = new EmbedBuilder()
                 .setTitle(`📅 Emploi du Temps Général - ${guild.name}`)
@@ -488,7 +526,6 @@ client.on('interactionCreate', async (interaction) => {
             return interaction.reply({ embeds: [edtEmbed] });
         }
 
-        // --- /SETUP_LOGS ---
         if (commandName === 'setup_logs') {
             const targetChannel = options.getChannel('salon');
             if (!db.configs[guild.id]) db.configs[guild.id] = {};
@@ -499,7 +536,6 @@ client.on('interactionCreate', async (interaction) => {
             logCreator('SETUP_LOGS', user, `Salon : #${targetChannel.name}`, guild.name);
         }
 
-        // --- /SETUP_RETENUE ---
         if (commandName === 'setup_retenue') {
             const targetRole = options.getRole('rôle');
             if (!db.configs[guild.id]) db.configs[guild.id] = {};
@@ -510,7 +546,6 @@ client.on('interactionCreate', async (interaction) => {
             logCreator('SETUP_RETENUE', user, `Rôle autorisé : ${targetRole.name}`, guild.name);
         }
 
-        // --- /RETENUE ---
         if (commandName === 'retenue') {
             const allowedRoleId = db.configs[guild.id]?.retenueRoleId;
 
@@ -553,7 +588,6 @@ client.on('interactionCreate', async (interaction) => {
             logCreator('RETENUE', user, `Élève: ${eleve.tag} | Raison: ${raison}`, guild.name);
         }
 
-        // --- /ABSENCE ---
         if (commandName === 'absence') {
             const eleve = options.getUser('élève');
             const typeSig = options.getString('type');
@@ -580,7 +614,6 @@ client.on('interactionCreate', async (interaction) => {
             logCreator('ABSENCE', user, `Élève: ${eleve.tag} | Type: ${typeSig}`, guild.name);
         }
 
-        // --- /SONDAGE ---
         if (commandName === 'sondage') {
             const targetChannel = options.getChannel('salon');
             const titre = options.getString('titre');
@@ -601,7 +634,6 @@ client.on('interactionCreate', async (interaction) => {
             logCreator('SONDAGE', user, `Titre: ${titre}`, guild.name);
         }
 
-        // --- /SEND_CODES ---
         if (commandName === 'send_codes') {
             const targetUser = options.getUser('élève');
             const idVal = options.getString('identifiant');
@@ -660,7 +692,6 @@ client.on('interactionCreate', async (interaction) => {
             logCreator('SEND_CODES', user, `Cible: ${targetUser.tag} | Mode: ${mode}`, guild.name);
         }
 
-        // --- /PRONOTE_INFO ---
         if (commandName === 'pronote_info') {
             const targetChannel = options.getChannel('salon');
             const ip = options.getString('adresse_ip');
@@ -690,7 +721,6 @@ client.on('interactionCreate', async (interaction) => {
             logCreator('PRONOTE_INFO', user, `Publié dans #${targetChannel.name}`, guild.name);
         }
 
-        // --- /CONVOCATION ---
         if (commandName === 'convocation') {
             const targetChannel = options.getChannel('salon');
             const targetUser = options.getUser('cible');
@@ -718,7 +748,6 @@ client.on('interactionCreate', async (interaction) => {
             logCreator('CONVOCATION', user, `Convoqué: ${targetUser.tag}`, guild.name);
         }
 
-        // --- /ANNONCE_IMPORTANTE ---
         if (commandName === 'annonce_importante') {
             const targetChannel = options.getChannel('salon');
             const titre = options.getString('titre');
@@ -736,7 +765,6 @@ client.on('interactionCreate', async (interaction) => {
             logCreator('ANNONCE', user, `Titre: ${titre}`, guild.name);
         }
 
-        // --- /BULLETIN_CHANGE ---
         if (commandName === 'bulletin_change') {
             const targetUser = options.getUser('élève');
             const appreciation = options.getString('appréciation');
@@ -749,7 +777,6 @@ client.on('interactionCreate', async (interaction) => {
             logCreator('BULLETIN_CHANGE', user, `Élève: ${targetUser.tag}`, guild.name);
         }
 
-        // --- /BULLETIN_VIEW ---
         if (commandName === 'bulletin_view') {
             const targetUser = options.getUser('élève') || user;
             const appreciation = db.bulletins[guild.id]?.[targetUser.id] || "Aucune appréciation enregistrée pour le moment dans cet établissement.";
@@ -769,7 +796,6 @@ client.on('interactionCreate', async (interaction) => {
             await interaction.reply({ embeds: [embed] });
         }
 
-        // --- /CLEAR ---
         if (commandName === 'clear') {
             const amount = options.getInteger('nombre');
             await channel.bulkDelete(amount, true);
@@ -777,7 +803,6 @@ client.on('interactionCreate', async (interaction) => {
             logCreator('CLEAR', user, `${amount} messages supprimés dans #${channel.name}`, guild.name);
         }
 
-        // --- /INFO_SERVER ---
         if (commandName === 'info_server') {
             const owner = await guild.fetchOwner();
             const embed = new EmbedBuilder()
@@ -795,7 +820,6 @@ client.on('interactionCreate', async (interaction) => {
             await interaction.reply({ embeds: [embed] });
         }
 
-        // --- /MP (CORRIGÉ : MESSAGE SIMPLE SANS LE CARACTÈRE OFFICIEL) ---
         if (commandName === 'mp') {
             const target = options.getUser('cible');
             const msg = options.getString('message');
@@ -820,7 +844,6 @@ client.on('interactionCreate', async (interaction) => {
             }
         }
 
-        // --- /SAY ---
         if (commandName === 'say') {
             const msg = options.getString('message');
             await channel.send({ content: msg });
@@ -828,7 +851,6 @@ client.on('interactionCreate', async (interaction) => {
             logCreator('COMMANDE /SAY', user, `Dans #${channel.name} | Message: "${msg}"`, guild.name);
         }
 
-        // --- /INFO_USER ---
         if (commandName === 'info_user') {
             const targetUser = options.getUser('cible') || user;
             const memberObj = await guild.members.fetch(targetUser.id).catch(() => null);
@@ -846,7 +868,6 @@ client.on('interactionCreate', async (interaction) => {
             await interaction.reply({ embeds: [embed] });
         }
 
-        // --- /RENAME_USER ---
         if (commandName === 'rename_user') {
             const targetMember = options.getMember('cible');
             const newName = options.getString('pseudo');
@@ -858,7 +879,6 @@ client.on('interactionCreate', async (interaction) => {
             logCreator('MODERATION (RENAME)', user, `Target: ${targetMember.user.tag} | ${oldName} -> ${newName}`, guild.name);
         }
 
-        // --- /BAN ---
         if (commandName === 'ban') {
             const targetUser = options.getUser('cible');
             const reason = options.getString('raison') || 'Aucune raison';
@@ -867,7 +887,6 @@ client.on('interactionCreate', async (interaction) => {
             logCreator('MODERATION (BAN)', user, `Target: ${targetUser.tag} | Raison: ${reason}`, guild.name);
         }
 
-        // --- /KICK ---
         if (commandName === 'kick') {
             const targetMember = options.getMember('cible');
             const reason = options.getString('raison') || 'Aucune raison';
@@ -877,7 +896,6 @@ client.on('interactionCreate', async (interaction) => {
             logCreator('MODERATION (KICK)', user, `Target: ${targetMember.user.tag} | Raison: ${reason}`, guild.name);
         }
 
-        // --- /MUTE ---
         if (commandName === 'mute') {
             const targetMember = options.getMember('cible');
             const minutes = options.getInteger('duree');
@@ -922,6 +940,7 @@ client.once('ready', async () => {
         console.error('Erreur de déploiement des commandes :', err);
     }
 
+    // Vérifie et crée les salons refuge si manquants SANS envoyer de message de bienvenue
     client.guilds.cache.forEach(guild => checkRefugeChannel(guild, false));
 });
 
